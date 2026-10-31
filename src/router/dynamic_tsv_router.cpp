@@ -51,7 +51,7 @@ double tsv_landing_marginal_q(const RoutingGraph& graph,const SlotCandidate& slo
     const auto mandatory=mandatory_tsv_contribution(graph,slot.point,
         metrics.tsv_congestion_ratio,metrics.tsv_track_demand,own_pin_nodes,metrics.a150_rules);
     long double value=0;
-    for(const auto [node,added]:mandatory) {
+    for(const auto& [node,added]:mandatory) {
         if(node<0 || size_t(node)>=demand.size())
             throw std::logic_error("TSV landing quote has an invalid interface node");
         const auto found=std::lower_bound(old_route.demand.begin(),old_route.demand.end(),node,
@@ -73,12 +73,43 @@ double tsv_landing_q_delta(const RoutingGraph& graph,const SlotCandidate& previo
     return tsv_landing_marginal_q(graph,target,demand,old_route,own_pin_nodes,metrics)-
         tsv_landing_marginal_q(graph,previous,demand,old_route,own_pin_nodes,metrics);
 }
+// Q of the common other-net ledger: the live ledger with this net's complete
+// cached contribution withdrawn. Old and new landings are priced on this one
+// base, so neither inherits the other's routing or the removal of the path.
+long double tsv_quote_base_q(const RoutingGraph& graph,const std::vector<int>& demand,
+        const NetGuideMetrics& old_route,long double live_q) {
+    if(!std::isfinite(live_q) || live_q<0) throw std::logic_error("TSV quote base needs a finite live Q");
+    long double removed=0;
+    for(const auto& [node,owned]:old_route.demand) {
+        if(node<0 || size_t(node)>=demand.size() || owned<=0)
+            throw std::logic_error("TSV quote base has an invalid own cell");
+        const int remaining=demand[size_t(node)]-owned;
+        if(remaining<0) throw std::logic_error("TSV quote base cannot remove absent own demand");
+        removed+=official_resource_cell_contribution(graph,node,demand[size_t(node)]).squared-
+            official_resource_cell_contribution(graph,node,remaining).squared;
+    }
+    if(removed>live_q+1e-9L*std::max(1.0L,live_q))
+        throw std::logic_error("TSV quote base: own contribution exceeds the live ledger Q");
+    return std::max(0.0L,live_q-removed);
+}
+// Exact weighted C loss 30*(1/sqrt(1+Q_b)-1/sqrt(1+Q_b+m)) of adding m on Q_b.
+// Rationalized against cancellation for tiny m. It is nonnegative and at most
+// 30/sqrt(1+Q_b), so retrieval lower bounds that omit it remain valid.
+double finite_congestion_quote(long double base_q,long double added_q) {
+    if(!std::isfinite(base_q) || base_q<0 || !std::isfinite(added_q) || added_q<0)
+        throw std::logic_error("finite TSV quote needs nonnegative finite Q values");
+    if(added_q==0) return 0;
+    const long double a=std::sqrt(1+base_q),b=std::sqrt(1+base_q+added_q);
+    return double(30*added_q/(a*b*(a+b)));
+}
 std::vector<TsvMoveCandidate> dynamic_tsv_candidates(const TsvMoveSearch& proposals,
         const RoutingGraph& graph,const TsvPolicy& policy,const std::vector<int>& demand,
         size_t index,int old_slot,double squared_overflow,TsvMoveSearchOptions options,bool probe,
         const NetGuideMetrics& old_route,const std::vector<int>& own_pin_nodes,
         const OfficialMetricOptions& metrics,bool correct_pricing,bool resource_pool,
-        TsvMoveSearchDiagnostics* diagnostics) {
+        TsvMoveSearchDiagnostics* diagnostics,const TsvQuoteSettings& quote) {
+    if(quote.finite && !correct_pricing)
+        throw std::invalid_argument("finite TSV quote requires track-aware landing pricing");
     if(!correct_pricing && !resource_pool)
         return dynamic_tsv_candidates(proposals,graph,policy,demand,index,old_slot,
             squared_overflow,options,probe);
@@ -93,42 +124,99 @@ std::vector<TsvMoveCandidate> dynamic_tsv_candidates(const TsvMoveSearch& propos
         (probe?std::min(size_t(8),2*final_limit):std::min(size_t(64),4*final_limit));
     if(probe) options.max_pins=32;
     const double price=15/std::pow(1+squared_overflow,1.5);
-    std::unordered_map<int,double> quote_cache;
-    const auto marginal=[&](int id) {
+    // One common base per query; the cache below is valid only while this
+    // query's ledger snapshot is unchanged.
+    const long double base_q=quote.finite?tsv_quote_base_q(graph,demand,old_route,squared_overflow):0.0L;
+    if(quote.diagnostics) {
+        ++quote.diagnostics->queries;
+        if(quote.finite) quote.diagnostics->base_q_drop+=double(squared_overflow-base_q);
+    }
+    // charge ranks the candidates; derivative is the historical quote, kept
+    // for the audit even when the finite charge is selected.
+    struct Quote {double charge{},derivative{};};
+    std::unordered_map<int,Quote> quote_cache;
+    const auto evaluate=[&](int id) {
         const auto cached=quote_cache.find(id);
         if(cached!=quote_cache.end()) return cached->second;
         const auto& slot=policy.slots().at(size_t(id));
+        Quote value;
         if(correct_pricing) {
-            const double value=price*tsv_landing_marginal_q(graph,slot,demand,old_route,own_pin_nodes,metrics);
-            quote_cache.emplace(id,value);return value;
+            const double m=tsv_landing_marginal_q(graph,slot,demand,old_route,own_pin_nodes,metrics);
+            value.derivative=price*m;
+            value.charge=quote.finite?finite_congestion_quote(base_q,m):value.derivative;
+        } else {
+            double q=0;
+            for(int node:{slot.lower_node,slot.upper_node,
+                    graph.node(graph.col(slot.lower_node),graph.row(slot.lower_node),9)}) {
+                const double capacity=graph.official_capacity(node);
+                if(capacity<=0) {q+=10000;continue;}
+                const double total=demand.at(size_t(node))+graph.official_obstacle_demand(node);
+                const double before =graph.congestion_overflow_scale()*std::max(0.0,total-int(capacity))/capacity;
+                const double after =graph.congestion_overflow_scale()*std::max(0.0,total+1-int(capacity))/capacity;
+                q+=after*after-before*before;
+            }
+            value.charge=value.derivative=price*q;
         }
-        double q=0;
-        for(int node:{slot.lower_node,slot.upper_node,
-                graph.node(graph.col(slot.lower_node),graph.row(slot.lower_node),9)}) {
-            const double capacity=graph.official_capacity(node);
-            if(capacity<=0) {q+=10000;continue;}
-            const double total=demand.at(size_t(node))+graph.official_obstacle_demand(node);
-            const double before =graph.congestion_overflow_scale()*std::max(0.0,total-int(capacity))/capacity;
-            const double after =graph.congestion_overflow_scale()*std::max(0.0,total+1-int(capacity))/capacity;
-            q+=after*after-before*before;
-        }
-        const double value=price*q;quote_cache.emplace(id,value);return value;
+        if(quote.diagnostics) ++quote.diagnostics->quotes;
+        quote_cache.emplace(id,value);return value;
     };
     if(resource_pool) {
-        options.landing_cost=marginal;options.diagnostics=diagnostics;
+        options.landing_cost=[&](int id) {return evaluate(id).charge;};options.diagnostics=diagnostics;
         options.resource_node_limit=probe?256:1024;
     }
     auto candidates=proposals.candidates(index,options);
-    if(!resource_pool) {
-        const double old=marginal(old_slot);
-        for(auto& candidate:candidates) candidate.estimated_score_delta-=marginal(candidate.slot)-old;
-    }
-    std::stable_sort(candidates.begin(),candidates.end(),[](const auto& a,const auto& b) {
+    const auto by_estimate=[](const auto& a,const auto& b) {
         if(a.estimated_score_delta!=b.estimated_score_delta) return a.estimated_score_delta>b.estimated_score_delta;
         return a.slot<b.slot;
-    });
+    };
+    // Without resource-aware retrieval both quotes see the identical raw pool,
+    // so the derivative shortlist is an exact counterfactual for this query.
+    const bool compare=quote.finite && !resource_pool;
+    std::vector<TsvMoveCandidate> derivative_list;
+    if(!resource_pool) {
+        const auto old=evaluate(old_slot);
+        if(compare) {
+            derivative_list=candidates;
+            for(auto& candidate:derivative_list)
+                candidate.estimated_score_delta-=evaluate(candidate.slot).derivative-old.derivative;
+            std::stable_sort(derivative_list.begin(),derivative_list.end(),by_estimate);
+            if(derivative_list.size()>final_limit) derivative_list.resize(final_limit);
+        }
+        for(auto& candidate:candidates) candidate.estimated_score_delta-=evaluate(candidate.slot).charge-old.charge;
+    }
+    std::stable_sort(candidates.begin(),candidates.end(),by_estimate);
     if(candidates.size()>final_limit) candidates.resize(final_limit);
+    if(quote.finite && quote.diagnostics) {
+        auto& audit=*quote.diagnostics;
+        const auto old=evaluate(old_slot);
+        for(const auto& candidate:candidates) {
+            const auto value=evaluate(candidate.slot);
+            const double difference=(value.charge-old.charge)-(value.derivative-old.derivative);
+            audit.finite_minus_derivative+=difference;
+            audit.abs_finite_minus_derivative+=std::abs(difference);
+            audit.finite_lower+=difference<0;
+        }
+        if(compare) {
+            ++audit.compared_queries;audit.shortlisted+=candidates.size();
+            for(const auto& candidate:candidates)
+                if(std::none_of(derivative_list.begin(),derivative_list.end(),
+                        [&](const auto& other) {return other.slot==candidate.slot;})) {
+                    ++audit.newly_admitted;
+                    if(quote.newly_admitted) quote.newly_admitted->insert(candidate.slot);
+                }
+        }
+    }
     return candidates;
+}
+// Historical signature: derivative quote, no audit.
+std::vector<TsvMoveCandidate> dynamic_tsv_candidates(const TsvMoveSearch& proposals,
+        const RoutingGraph& graph,const TsvPolicy& policy,const std::vector<int>& demand,
+        size_t index,int old_slot,double squared_overflow,TsvMoveSearchOptions options,bool probe,
+        const NetGuideMetrics& old_route,const std::vector<int>& own_pin_nodes,
+        const OfficialMetricOptions& metrics,bool correct_pricing,bool resource_pool,
+        TsvMoveSearchDiagnostics* diagnostics) {
+    return dynamic_tsv_candidates(proposals,graph,policy,demand,index,old_slot,squared_overflow,options,probe,
+        old_route,own_pin_nodes,metrics,correct_pricing,resource_pool,diagnostics,TsvQuoteSettings{});
 }
 std::vector<TsvMoveCandidate> dynamic_tsv_candidates(const TsvMoveSearch& proposals,
         const RoutingGraph& graph,const TsvPolicy& policy,const std::vector<int>& demand,
@@ -210,13 +298,18 @@ std::vector<TsvMoveCandidate> regional_tsv_candidates(const TsvMoveSearch& propo
         size_t index,int old_slot,double q,TsvMoveSearchOptions options,
         const NetGuideMetrics& old_route,const std::vector<int>& own_pin_nodes,
         const OfficialMetricOptions& metrics,bool correct_pricing,bool resource_pool,
-        TsvMoveSearchDiagnostics* diagnostics) {
+        TsvMoveSearchDiagnostics* diagnostics,const TsvQuoteSettings& quote) {
+    if(quote.finite && !correct_pricing)
+        throw std::invalid_argument("finite TSV quote requires track-aware landing pricing");
     if(!correct_pricing && !resource_pool)
         return regional_tsv_candidates(proposals,graph,policy,demand,index,old_slot,q,options);
     const size_t limit=options.max_candidates;
     options.max_candidates=std::min(resource_pool?size_t(128):size_t(64),std::max(size_t(16),4*limit));
+    // Regional pools use the same quote model but stay out of the audit, which
+    // covers the main and probe queries only.
+    TsvQuoteSettings pool_quote=quote;pool_quote.diagnostics=nullptr;pool_quote.newly_admitted=nullptr;
     auto pool=dynamic_tsv_candidates(proposals,graph,policy,demand,index,old_slot,q,options,false,
-        old_route,own_pin_nodes,metrics,correct_pricing,resource_pool,diagnostics);
+        old_route,own_pin_nodes,metrics,correct_pricing,resource_pool,diagnostics,pool_quote);
     std::map<std::pair<int,int>,std::vector<TsvMoveCandidate>> regions;
     for(const auto& candidate:pool) {
         const auto& slot=policy.slots().at(size_t(candidate.slot));
@@ -252,6 +345,7 @@ void NegotiatedRouter::optimize_dynamic_tsv() {
     const auto baseline=measure();
     std::map<size_t,NetRoute> journal;
     const size_t accepted_start=counters_.v7_tsv_accepted;
+    const size_t quote_admission_accepted_start=counters_.tsv_quote_new_admission_accepted;
     const size_t positive_accepted_start=counters_.thermal_positive_accepted;
     const size_t tree_accepted_start=counters_.tsv_tree_move_accepted;
     const auto tree_charge_start=counters_.tsv_tree_move_accepted_charge_delta;
@@ -312,13 +406,15 @@ void NegotiatedRouter::optimize_dynamic_tsv() {
             o.risk_price=0.15/std::pow(1+current.official.squared_normalized_overflow,1.5);
             return o;
         };
-        const auto query=[&](size_t i,TsvMoveSearchOptions options,bool cheap) {
+        const auto query=[&](size_t i,TsvMoveSearchOptions options,bool cheap,std::set<int>* newly_admitted) {
             const auto current=recovery_metrics(best_metrics_);
-            if(options_.tsv_landing_pricing || options_.resource_candidate_pool)
+            if(options_.tsv_landing_pricing || options_.resource_candidate_pool) {
+                const TsvQuoteSettings quote{options_.tsv_finite_quote,&counters_.tsv_quote,newly_admitted};
                 return detail::dynamic_tsv_candidates(proposals,graph_,policy_,demand_,i,routes_[i].slot,
                     current.official.squared_normalized_overflow,options,cheap,routes_[i].measured,
                     own_pin_nodes_[i],options_.official_metrics,options_.tsv_landing_pricing,
-                    options_.resource_candidate_pool,options.diagnostics);
+                    options_.resource_candidate_pool,options.diagnostics,quote);
+            }
             return detail::dynamic_tsv_candidates(proposals,graph_,policy_,demand_,i,routes_[i].slot,
                 current.official.squared_normalized_overflow,options,cheap);
         };
@@ -347,7 +443,7 @@ void NegotiatedRouter::optimize_dynamic_tsv() {
             // The all-net pass must not spend quadratic MST work on a few
             // high-fanout nets. Those still receive the cached W/Q estimates
             // and remain eligible for the full bounded query on selection.
-            auto candidates=query(i,o,true);
+            auto candidates=query(i,o,true,nullptr);
             ++counters_.v8_tsv_probe_queries;
             if(options_.v9_tsv_coverage && v9_tsv_queried_seen_.insert(i).second)
                 ++counters_.v9_tsv_queried_unique;
@@ -475,7 +571,8 @@ void NegotiatedRouter::optimize_dynamic_tsv() {
                 auto query_options=settings(options_.v7_tsv_candidates);
                 if(thermal_visit) query_options.diagnostics=&diagnostics;
                 const auto query_started=Clock::now();
-                auto candidates=query(i,query_options,false);
+                std::set<int> newly_admitted;
+                auto candidates=query(i,query_options,false,&newly_admitted);
                 std::set<int> region_slots;
                 if(options_.v9_thermal_regions && !timed_out()) {
                     const auto regional_options=settings(std::min(size_t(4),options_.v7_tsv_candidates));
@@ -483,7 +580,8 @@ void NegotiatedRouter::optimize_dynamic_tsv() {
                         detail::regional_tsv_candidates(proposals,graph_,policy_,demand_,i,routes_[i].slot,
                             best_metrics_.official.squared_normalized_overflow,regional_options,routes_[i].measured,
                             own_pin_nodes_[i],options_.official_metrics,options_.tsv_landing_pricing,
-                            options_.resource_candidate_pool,thermal_visit?&diagnostics:nullptr):
+                            options_.resource_candidate_pool,thermal_visit?&diagnostics:nullptr,
+                            TsvQuoteSettings{options_.tsv_finite_quote,nullptr,nullptr}):
                         detail::regional_tsv_candidates(proposals,graph_,policy_,demand_,i,routes_[i].slot,
                             best_metrics_.official.squared_normalized_overflow,regional_options);
                     counters_.v9_region_candidates+=regional.size();
@@ -518,6 +616,8 @@ void NegotiatedRouter::optimize_dynamic_tsv() {
                     ++counters_.v7_tsv_attempted;
                     const bool positive_heat=candidate.correlation_after>proposals.current_correlation()+1e-14;
                     if(thermal_visit && positive_heat) ++counters_.thermal_positive_trials;
+                    const bool quote_admission=newly_admitted.count(candidate.slot)>0;
+                    if(quote_admission) ++counters_.tsv_quote_new_admission_attempted;
                     if(thermal_visit && v6_thermal_rerouted_seen_.insert(i).second)
                         ++counters_.thermal_rerouted_unique;
                     if(options_.v9_tsv_coverage && v9_tsv_rerouted_seen_.insert(i).second)
@@ -594,6 +694,7 @@ void NegotiatedRouter::optimize_dynamic_tsv() {
                                 counters_.tsv_tree_move_accepted_rho_delta+=after.guide.correlation-before.guide.correlation;
                             }
                             ++counters_.v7_tsv_accepted;++batch_accepted;++sweep_accepted;
+                            if(quote_admission) ++counters_.tsv_quote_new_admission_accepted;
                             if(thermal_visit && positive_heat) ++counters_.thermal_positive_accepted;
                             if(options_.v9_tsv_coverage && !v9_tsv_moved_seen_.count(i)) {
                                 // Allocate rollback metadata before accepting
@@ -683,6 +784,7 @@ void NegotiatedRouter::optimize_dynamic_tsv() {
         dynamic_tsv_search_.reset(); // accepted proposal moves are about to be rolled back
         for(auto& [i,old]:journal) {account(i,routes_[i],-1);routes_[i]=std::move(old);account(i,routes_[i],1);}
         counters_.v7_tsv_accepted=accepted_start;counters_.v8_tsv_queue_gain=queue_gain_start;
+        counters_.tsv_quote_new_admission_accepted=quote_admission_accepted_start;
         counters_.thermal_positive_accepted=positive_accepted_start;
         counters_.tsv_tree_move_accepted=tree_accepted_start;
         counters_.tsv_tree_move_accepted_charge_delta=tree_charge_start;

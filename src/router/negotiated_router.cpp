@@ -41,6 +41,8 @@ RouterOptions documented_options(RouterOptions o) {
         throw std::invalid_argument("A150 requires physical track demand, unit ratio and a PIN/OBS scope");
     if(o.tsv_landing_pricing && (!o.official_metrics.tsv_track_demand || !o.v8_tsv_dynamic))
         throw std::invalid_argument("TSV landing pricing requires track demand and dynamic TSV");
+    if(o.tsv_finite_quote && !o.tsv_landing_pricing)
+        throw std::invalid_argument("finite TSV quote requires track-aware TSV landing pricing");
     if(o.tsv_landing_rrr && (!o.official_metrics.tsv_track_demand || !o.v8_rrr))
         throw std::invalid_argument("TSV landing RRR requires track demand and hotspot RRR");
     if(o.future_tsv_reservation && !o.official_metrics.tsv_track_demand)
@@ -2220,6 +2222,19 @@ bool NegotiatedRouter::export_stats(const std::string& path) const {
            <<",\"rejected_q\":"<<counters_.thermal_rejected_q
            <<",\"rejected_length_and_q\":"<<counters_.thermal_rejected_length_and_q
            <<",\"scope\":\"explicit-thermal-queue-only;other-queues-may-also-evaluate-positive-heat\"}"
+           <<",\"tsv_landing_quote\":{\"mode\":\""<<(options_.tsv_finite_quote?"finite-common-base":"live-derivative")
+           <<"\",\"queries\":"<<counters_.tsv_quote.queries
+           <<",\"quotes\":"<<counters_.tsv_quote.quotes
+           <<",\"finite_lower_than_derivative\":"<<counters_.tsv_quote.finite_lower
+           <<",\"compared_queries\":"<<counters_.tsv_quote.compared_queries
+           <<",\"shortlisted\":"<<counters_.tsv_quote.shortlisted
+           <<",\"newly_admitted\":"<<counters_.tsv_quote.newly_admitted
+           <<",\"newly_admitted_attempted\":"<<counters_.tsv_quote_new_admission_attempted
+           <<",\"newly_admitted_accepted\":"<<counters_.tsv_quote_new_admission_accepted
+           <<",\"base_q_drop_sum\":"<<counters_.tsv_quote.base_q_drop
+           <<",\"finite_minus_derivative_sum\":"<<counters_.tsv_quote.finite_minus_derivative
+           <<",\"abs_finite_minus_derivative_sum\":"<<counters_.tsv_quote.abs_finite_minus_derivative
+           <<",\"scope\":\"shortlist-proxy-only;complete-S-decides-acceptance;comparison-on-identical-raw-pools-when-resource-pool-off\"}"
            <<",\"fixed_floor\":{\"available\":"<<(options_.official_model&&graph_.documented_rules()?"true":"false");
         if(options_.official_model&&graph_.documented_rules()) {
             std::array<uint64_t,21> fixed_overflow{};std::array<long double,21> fixed_q{};
@@ -2484,6 +2499,7 @@ bool NegotiatedRouter::export_stats(const std::string& path) const {
         out<<"},\n\"options\":{\"rrr_rounds\":"<<options_.rrr_rounds<<",\"tsv_rounds\":"<<options_.tsv_rounds
             <<",\"tsv_track_demand\":"<<(options_.official_metrics.tsv_track_demand?"true":"false")
             <<",\"tsv_landing_pricing\":"<<(options_.tsv_landing_pricing?"true":"false")
+            <<",\"tsv_finite_quote\":"<<(options_.tsv_finite_quote?"true":"false")
             <<",\"tsv_landing_rrr\":"<<(options_.tsv_landing_rrr?"true":"false")
            <<",\"rrr_score_aware\":"<<(options_.rrr_score_aware?"true":"false")
            <<",\"rrr_net_limit\":"<<options_.rrr_net_limit

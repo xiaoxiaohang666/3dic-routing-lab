@@ -58,6 +58,7 @@ void usage(const char* p) {
         <<"--thermal-coverage 0|1 (independent thermal exploration coverage)\n"
         <<"--tsv-track-demand 0|1 (5um landing-cell track union; default 0)\n"
         <<"--tsv-landing-pricing 0|1 (撤账后TSV候选报价; requires track demand and dynamic TSV)\n"
+        <<"--tsv-finite-quote 0|1 (default 0; exact C change on the common other-net ledger; requires landing pricing)\n"
         <<"--tsv-landing-rrr 0|1 (fixed-TSV M11 movable-Guide repair; requires track demand and hotspot RRR)\n"
         <<"--large-recovery 0|1 (default 0; bounded fixed-TSV Guide wirelength recovery, official only)\n"
         <<"--large-recovery-nets N (1..4096, default 1024) --large-recovery-rounds N (1..2, default 1)\n"
@@ -120,7 +121,7 @@ int main(int argc,char** argv) {
             const std::set<std::string> v7_options={"--v7-topology","--v7-rrr","--v7-rrr-net-limit","--v7-rrr-astar-net-limit","--v7-rrr-astar-expansions","--v7-rrr-astar-seconds","--v7-cell-cost","--resource-profile","--v7-tsv","--v7-tsv-nets","--v7-tsv-candidates","--v7-tsv-seconds"};
             const std::set<std::string> v8_options={"--v8-rrr","--v8-rrr-group-size","--v8-tsv-rematch","--v8-tsv-rematch-group-size","--v8-tsv-rematch-nets","--v8-tsv-rematch-seconds","--v8-tsv-dynamic","--v8-tsv-probe-candidates","--v8-recovery","--unified-budget","--congestion-price-cap","--score-unit-cost"};
             const std::set<std::string> v9_options={"--v9-incremental-rrr","--v9-checkpoint-groups","--v9-checkpoint-seconds","--v9-subtree-recovery","--v9-subtree-branches","--v9-subtree-boundary","--v9-access-rematch","--v9-rematch-edges","--v9-rematch-access-seconds","--v9-tsv-coverage","--v9-tsv-stale-sweeps","--v9-thermal-regions","--v9-adaptive-budget"};
-            const std::set<std::string> landing_options={"--tsv-track-demand","--tsv-landing-pricing","--tsv-landing-rrr",
+            const std::set<std::string> landing_options={"--tsv-track-demand","--tsv-landing-pricing","--tsv-finite-quote","--tsv-landing-rrr",
                 "--future-tsv-reservation","--resource-local-rrr","--joint-layer-recovery","--resource-candidate-pool","--thermal-coverage","--tsv-index-reuse","--checkpoint-reuse","--checkpoint-amortization"};
             const std::set<std::string> low_layer_options={"--low-layer-mask","--low-layer-seconds","--low-layer-max-attempts","--rrr-reserved-seconds"};
             const std::set<std::string> tree_move_options={"--tsv-tree-move","--tsv-tree-move-seconds","--tsv-tree-move-expansions"};
@@ -189,6 +190,7 @@ int main(int argc,char** argv) {
                 const int v=integer(value);if(v>1) throw std::runtime_error("TSV landing boolean must be 0 or 1");
                 if(arg=="--tsv-track-demand") { options.official_metrics.tsv_track_demand=v;explicit_track_demand=true; }
                 else if(arg=="--tsv-landing-pricing") options.tsv_landing_pricing=v;
+                else if(arg=="--tsv-finite-quote") options.tsv_finite_quote=v;
                 else if(arg=="--tsv-landing-rrr") options.tsv_landing_rrr=v;
                 else if(arg=="--future-tsv-reservation") options.future_tsv_reservation=v;
                 else if(arg=="--resource-local-rrr") options.resource_local_rrr=v;
@@ -461,6 +463,8 @@ int main(int argc,char** argv) {
             throw std::runtime_error("Resource thermal search requires track demand and dynamic TSV");
         if(options.tsv_landing_pricing && (!options.official_metrics.tsv_track_demand || !options.v8_tsv_dynamic))
             throw std::runtime_error("TSV landing pricing requires --tsv-track-demand 1 --v8-tsv-dynamic 1");
+        if(options.tsv_finite_quote && !options.tsv_landing_pricing)
+            throw std::runtime_error("--tsv-finite-quote 1 requires --tsv-landing-pricing 1");
         if(options.tsv_landing_rrr && (!options.official_metrics.tsv_track_demand || !options.v8_rrr))
             throw std::runtime_error("TSV landing RRR requires --tsv-track-demand 1 --v8-rrr 1");
         if(objective_profile!="documented") {

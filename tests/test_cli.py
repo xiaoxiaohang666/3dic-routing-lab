@@ -35,11 +35,14 @@ class CliTests(unittest.TestCase):
         return result
 
     def test_help(self):
-        self.run_cli(["--help"], success=True)
+        result = self.run_cli(["--help"], success=True)
+        self.assertIn("--tsv-finite-quote", result.stdout + result.stderr)
 
     def test_invalid_arguments(self):
         for args in [[], ["--unknown"], ["--input-def"], ["--input-def", "--lefs", "a"],
-                     [*INPUTS, "-o", ""], [*INPUTS, "--output", "--help"]]:
+                     [*INPUTS, "-o", ""], [*INPUTS, "--output", "--help"],
+                     # The finite TSV quote is boolean and needs landing pricing.
+                     [*INPUTS, "--tsv-finite-quote", "2"], [*INPUTS, "--tsv-finite-quote", "1"]]:
             with self.subTest(args=args):
                 self.run_cli(args)
 

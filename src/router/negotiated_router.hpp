@@ -53,6 +53,10 @@ struct RouterOptions {
     bool v9_adaptive_budget{false};
     // Independent experiments after the October 27 TSV occupancy update.
     bool tsv_landing_pricing{false}, tsv_landing_rrr{false};
+    // Landing congestion quote: false keeps the live-Q derivative times the
+    // residual Delta Q; true prices both landings by the exact C change on the
+    // common ledger with the moving net removed. Requires tsv_landing_pricing.
+    bool tsv_finite_quote{false};
     // Resource-v6 switches stay independent for controlled experiments.
     bool future_tsv_reservation{false}, resource_local_rrr{false}, joint_layer_recovery{false};
     bool resource_candidate_pool{false}, thermal_coverage{false};
@@ -84,6 +88,25 @@ struct RouterOptions {
     OfficialMetricOptions official_metrics;
     std::string official_runtime;
     bool explicit_thermal_gain{false};
+};
+// Audit of dynamic TSV landing quotes. "derivative" is the historical live-Q
+// derivative quote evaluated on the same candidate pool for comparison only.
+struct TsvQuoteDiagnostics {
+    size_t queries{}, quotes{}, finite_lower{};
+    // Shortlists compared on identical raw pools (resource-pool retrieval off):
+    // entries in the final list and entries absent from the derivative list.
+    size_t compared_queries{}, shortlisted{}, newly_admitted{};
+    double base_q_drop{};                 // sum of live Q - Q_b over queries
+    double finite_minus_derivative{};     // sum of relative-charge differences
+    double abs_finite_minus_derivative{};
+};
+// Per-query quote settings for the dynamic TSV shortlist.
+struct TsvQuoteSettings {
+    bool finite{false};
+    TsvQuoteDiagnostics* diagnostics{nullptr};
+    // Receives final-shortlist slots that the derivative quote would not have
+    // shortlisted from the same raw pool (finite mode, resource pool off).
+    std::set<int>* newly_admitted{nullptr};
 };
 struct RouterCounters {
     size_t expansions{}, search_peak_states{}, rrr_attempted{}, rrr_accepted{}, rollbacks{}, tsv_trials{},
@@ -133,6 +156,8 @@ struct RouterCounters {
            tsv_tree_move_accepted_length_delta{}, tsv_tree_move_accepted_q_delta{}, tsv_tree_move_accepted_rho_delta{};
     std::array<double,3> tsv_tree_move_accepted_charge_delta{}; // planar, ordinary via, TSV
     size_t thermal_rejected_length_and_q{};
+    TsvQuoteDiagnostics tsv_quote{};
+    size_t tsv_quote_new_admission_attempted{}, tsv_quote_new_admission_accepted{};
     size_t v9_local_validations{}, v9_full_checkpoints{}, v9_checkpoint_restores{};
     double v9_local_validation_seconds{}, v9_full_validation_seconds{};
     size_t v9_subtree_candidates{}, v9_subtree_accepted{}, v9_subtree_searches{};
