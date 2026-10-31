@@ -84,6 +84,8 @@ void usage(const char* p) {
         <<"--tsv-polish-candidates N (default 0: inherit tsv-candidates; max 65536)\n"
         <<"--tsv-polish-passes N (default 2; range 1..64) --tsv-polish-bidirectional 0|1 (default 0)\n"
         <<"--tsv-polish-thermal-candidates 0|1 (default 0; thermal-aware free-slot KD candidates)\n"
+        <<"--tsv-shared-cell-limit N (default 1; experimental multi-net same-cell TSV hubs of at most N nets, global-grid only;\n"
+        <<"    TSV move/rematch phases are skipped while N>1) --tsv-shared-hot-radius R (default 0; hottest hub within R rings)\n"
         <<"--tsv-block-refine 0|1 (default 0; occupied-slot cost-improving permutations, official only)\n"
         <<"--tsv-block-size N (3..64, default 16) --tsv-block-passes N (1..16, default 2)\n"
         <<"--tsv-block-max-groups N (1..65536) --tsv-block-max-evals N (1..100000000)\n"
@@ -115,7 +117,7 @@ int main(int argc,char** argv) {
         for(int i=1;i<argc;++i) {
             std::string arg=argv[i];if(arg=="--help"||arg=="-h") {usage(argv[0]);return 0;}
             const std::set<std::string> recognized={"--def","--input-def","--lef","--lefs","--thermal-report","--thermal-json",
-                "--rules-profile","--tsv-obstacle-scope","--output","-o","--stats","--router","--rrr-rounds","--rrr-score-aware","--rrr-net-limit","--tsv-rounds","--search","--time-limit","--search-limit","--local-repair","--wirelength-rounds","--pin-local","--tsv-local","--tsv-resource-mode","--tsv-candidates","--tsv-max-candidates","--cell-pin-access","--fast-initial","--fast-quality","--fast-layer-pruning","--model","--official-runtime","--thermal-gain","--official-score-pricing","--nonpreferred","--tsv-assignment-polish","--tsv-polish-heat-weight","--tsv-polish-thermal","--tsv-polish-candidates","--tsv-polish-passes","--tsv-polish-bidirectional","--tsv-polish-thermal-candidates"};
+                "--rules-profile","--tsv-obstacle-scope","--output","-o","--stats","--router","--rrr-rounds","--rrr-score-aware","--rrr-net-limit","--tsv-rounds","--search","--time-limit","--search-limit","--local-repair","--wirelength-rounds","--pin-local","--tsv-local","--tsv-resource-mode","--tsv-candidates","--tsv-max-candidates","--cell-pin-access","--fast-initial","--fast-quality","--fast-layer-pruning","--model","--official-runtime","--thermal-gain","--official-score-pricing","--nonpreferred","--tsv-assignment-polish","--tsv-polish-heat-weight","--tsv-polish-thermal","--tsv-polish-candidates","--tsv-polish-passes","--tsv-polish-bidirectional","--tsv-polish-thermal-candidates","--tsv-shared-cell-limit","--tsv-shared-hot-radius"};
             const std::set<std::string> recovery_options={"--large-recovery","--large-recovery-nets","--large-recovery-rounds","--large-recovery-seconds","--large-recovery-branches"};
             const std::set<std::string> v5_options={"--tsv-block-refine","--tsv-block-size","--tsv-block-passes","--tsv-block-max-groups","--tsv-block-max-evals","--tsv-block-seconds","--v5-pin-rooted","--v5-topology-max-pins"};
             const std::set<std::string> v7_options={"--v7-topology","--v7-rrr","--v7-rrr-net-limit","--v7-rrr-astar-net-limit","--v7-rrr-astar-expansions","--v7-rrr-astar-seconds","--v7-cell-cost","--resource-profile","--v7-tsv","--v7-tsv-nets","--v7-tsv-candidates","--v7-tsv-seconds"};
@@ -388,6 +390,16 @@ int main(int argc,char** argv) {
                 explicit_polish_budget=true;int v=integer(value);
                 if(v>1) throw std::runtime_error("tsv-polish-bidirectional must be 0 or 1");
                 options.tsv_policy.polish_bidirectional=v;
+            }
+            else if(arg=="--tsv-shared-cell-limit") {
+                const int v=integer(value,true);
+                if(v>64) throw std::runtime_error("tsv-shared-cell-limit must be 1..64");
+                options.tsv_policy.shared_cell_limit=size_t(v);
+            }
+            else if(arg=="--tsv-shared-hot-radius") {
+                const int v=integer(value);
+                if(v>64) throw std::runtime_error("tsv-shared-hot-radius must be 0..64");
+                options.tsv_policy.shared_hot_radius=v;
             }
             else if(arg=="--tsv-polish-thermal-candidates") {
                 explicit_polish_budget=true;const int v=integer(value);

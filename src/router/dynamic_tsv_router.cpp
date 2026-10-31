@@ -336,6 +336,8 @@ std::vector<TsvMoveCandidate> regional_tsv_candidates(const TsvMoveSearch& propo
 }
 void NegotiatedRouter::optimize_dynamic_tsv() {
     if(!options_.v8_tsv_dynamic || options_.tsv_rounds<=0 || timed_out()) return;
+    // The move index, owner map and Pearson shortcuts assume one net per landing.
+    if(policy_.shared_cell_limit()>1) {++rejection_reasons_["dynamic TSV skipped: shared TSV cells"];return;}
     if(!options_.official_model || !options_.official_metrics.score_20261020 ||
        options_.tsv_policy.resource_mode!=TsvResourceMode::GLOBAL_GRID)
         throw std::invalid_argument("dynamic TSV scheduling requires official 20261020 global-grid routing");

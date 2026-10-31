@@ -3,6 +3,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <set>
 #include <sstream>
 
@@ -144,12 +145,54 @@ void empty_clipped_cells(const fs::path& dir,const LefParser& lef) {
     rejects([&] {TsvPolicy::preflight(excess,lef,options);},"preflight counts integer-positive cells consistently with construction");
 }
 }
+// Multi-net same-cell hubs: loads respect the explicit budget, fixed interface
+// crossings stay exclusive, every member may use its hub and replay is stable.
+void shared_cells(const fs::path& dir,const LefParser& lef) {
+    DefParser def;require(def.parse(write(dir,"shared.def",design(9)),lef,DefGridMapping::OFFICIAL_FULL),"parse shared fixture");
+    TsvPolicyOptions options;options.resource_mode=TsvResourceMode::GLOBAL_GRID;
+    options.nearest_candidates=options.max_candidates=1;
+    RoutingGraphOptions go;go.geometry=RoutingGeometryMode::GLOBAL_GUIDE;
+    RoutingGraph graph(def,lef,go);ThermalParser thermal;
+    for (size_t limit:{size_t(2),size_t(4),size_t(9)}) for (int hot:{0,2}) {
+        auto shared=options;shared.shared_cell_limit=limit;shared.shared_hot_radius=hot;
+        TsvPolicy::preflight(def,lef,shared);TsvPolicy policy(def,lef,graph,shared);
+        const auto chosen=policy.assign(def.nets(),thermal);
+        std::map<int,size_t> load;
+        for (size_t n=0;n<chosen.size();++n) {
+            require(chosen[n]>=0 && policy.compatible(def.nets()[n],chosen[n]),"every member may use its hub");
+            ++load[chosen[n]];std::string error;
+            require(policy.validate_mapping(def.nets()[n],witness(policy.slots()[chosen[n]]),chosen[n],error),
+                    "a shared hub still has one positive-area crossing per net: "+error);
+        }
+        size_t peak=0;for (const auto& [slot,count]:load) {(void)slot;peak=std::max(peak,count);}
+        require(peak==limit && load.size()==(9+limit-1)/limit,"nine flexible nets fill ceil(9/limit) hubs");
+        require(policy.shared_hubs()==load.size() && policy.shared_members()==9 && policy.shared_peak_load()==peak,
+                "hub statistics describe the assignment");
+        require(policy.slot_capacity(chosen.front())==int(limit),"slot capacity reports the explicit budget");
+        require(policy.assign(def.nets(),thermal)==chosen,"shared assignment replays deterministically");
+    }
+    auto shared=options;shared.shared_cell_limit=4;
+    TsvPolicy policy(def,lef,graph,shared);
+    std::vector<Net> nets{fixed_net({{40,40}})};
+    for (size_t n=0;n<5;++n) nets.push_back(def.nets()[n]);
+    const auto chosen=policy.assign(nets,thermal);
+    for (size_t n=1;n<nets.size();++n) require(chosen[n]!=chosen[0],"a fixed interface crossing keeps its landing exclusively");
+    require(policy.shared_members()==5,"only flexible nets are grouped");
+    auto bad=options;bad.shared_cell_limit=0;
+    rejects([&] {TsvPolicy::preflight(def,lef,bad);},"zero nets per landing is rejected");
+    bad.shared_cell_limit=65;
+    rejects([&] {TsvPolicy::preflight(def,lef,bad);},"the experiment budget is bounded");
+    bad=options;bad.shared_cell_limit=2;bad.resource_mode=TsvResourceMode::PROJECTED;
+    rejects([&] {TsvPolicy::preflight(def,lef,bad);},"shared landings require global-grid resources");
+    TsvPolicy unique(def,lef,graph,options);const auto single=unique.assign(def.nets(),thermal);
+    require(std::set<int>(single.begin(),single.end()).size()==9 && unique.shared_hubs()==0,"default keeps one net per landing");
+}
 int main(int argc,char** argv) {
     try {
         if (argc!=2) throw std::runtime_error("usage: global_tsv_tests artifact-directory");
         const fs::path dir=argv[1];fs::create_directories(dir);LefParser lef;
         require(lef.parse(write(dir,"global.lef",technology())),"parse technology without physical TSVs");
-        capacity_and_geometry(dir,lef);empty_clipped_cells(dir,lef);
+        capacity_and_geometry(dir,lef);empty_clipped_cells(dir,lef);shared_cells(dir,lef);
         std::cout<<"Global TSV checks: "<<checks<<'\n';return 0;
     } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}
 }

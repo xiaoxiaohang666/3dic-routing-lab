@@ -33,6 +33,14 @@ struct TsvPolicyOptions {
     size_t block_max_groups{8192};
     size_t block_max_cost_evaluations{2000000};
     double block_max_seconds{60.0};
+    // Experimental multi-net same-cell TSVs (A62/A150: allowed, demand adds per
+    // net). 1 keeps one net per landing. Larger values regroup flexible nets of
+    // the unique GLOBAL_GRID assignment into hubs of at most this many nets; it
+    // is an experiment budget, not an official capacity. Hubs are the nearest
+    // unused legal landing to a group's median cell, or the hottest within
+    // shared_hot_radius rings.
+    size_t shared_cell_limit{1};
+    int shared_hot_radius{0};
 };
 struct SlotCandidate {
     int id{-1};
@@ -63,7 +71,11 @@ public:
     TsvPolicy(const DefParser& def, const LefParser& lef, const RoutingGraph& graph,
               TsvPolicyOptions options = {});
     const std::vector<SlotCandidate>& slots() const { return slots_; }
-    int slot_capacity(int) const { return 1; }
+    int slot_capacity(int) const { return static_cast<int>(options_.shared_cell_limit); }
+    size_t shared_cell_limit() const { return options_.shared_cell_limit; }
+    size_t shared_hubs() const { return shared_hubs_; }
+    size_t shared_members() const { return shared_members_; }
+    size_t shared_peak_load() const { return shared_peak_load_; }
     int net_tsv_count(const Net& net) const { return net.is_cross_die ? 1 : 0; }
     const char* pairing_mode() const {
         if (options_.resource_mode==TsvResourceMode::GLOBAL_GRID) return "global-grid";
@@ -136,6 +148,10 @@ private:
     mutable long long assignment_block_cost_reduction_{0};
     mutable bool assignment_block_budget_exhausted_{false};
     mutable double assignment_block_seconds_{0};
+    mutable size_t shared_hubs_{0}, shared_members_{0}, shared_peak_load_{0};
+    void share_cells(const std::vector<Net>& nets, const std::vector<int>& cross,
+                     const std::vector<std::vector<Point>>& forced, const std::vector<double>& heat,
+                     std::vector<int>& chosen) const;
     mutable std::chrono::steady_clock::time_point assignment_deadline_{std::chrono::steady_clock::time_point::max()};
     void refine_occupied_blocks(const std::vector<Net>& nets, const std::vector<int>& cross,
                                 const std::vector<Point>& anchors, std::vector<int>& chosen) const;

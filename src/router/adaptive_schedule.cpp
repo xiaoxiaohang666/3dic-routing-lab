@@ -29,8 +29,11 @@ void NegotiatedRouter::run_v9_schedule() {
                  <<std::chrono::duration<double>(Clock::now()-phase_started).count()
                  <<" gain="<<100*(best_metrics_.guide.quality-before)<<'\n';
     }
-    std::array<bool,4> enabled{options_.rrr_rounds>0,options_.v7_tsv&&options_.tsv_rounds>0,
-                              options_.v8_tsv_rematch,options_.large_recovery};
+    // TSV move families assume one net per landing; shared cells give their
+    // budget to RRR and recovery instead of dispatching no-op slices.
+    const bool unique_landings=policy_.shared_cell_limit()<=1;
+    std::array<bool,4> enabled{options_.rrr_rounds>0,unique_landings&&options_.v7_tsv&&options_.tsv_rounds>0,
+                              unique_landings&&options_.v8_tsv_rematch,options_.large_recovery};
     std::array<size_t,4> visits{},stale{};
     std::array<double,4> gain{},work{};
     int rrr_remaining=options_.rrr_rounds;

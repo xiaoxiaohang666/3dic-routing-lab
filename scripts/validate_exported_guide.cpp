@@ -48,6 +48,7 @@ Options options(int argc, char** argv) {
                       << "  [--score-profile legacy-20261011|20261020]\n"
                       << "  [--rules-profile a150-20261029|a150|historical] [--tsv-obstacle-scope all-layers|interface]\n"
                       << "  [--tsv-supply-only 0|1] (supply audit requires only --lef and --def)\n"
+                      << "  [--tsv-shared-cell-limit N] (default 1; global-grid nets per TSV landing, A62/A150 per-net demand)\n"
                       << "Physical defaults to strict OBS. Official uses full DEF grids and OBS/PIN capacity demand;\n"
                       << "  explicit --strict-obs 1 conflicts with --model official. Pin/TSV checks remain mandatory.\n"
                       << "Checks oriented terminals, Guide connectivity, DIE/OBS and engineering TSV mapping.\n"
@@ -69,6 +70,11 @@ Options options(int argc, char** argv) {
             if(value=="all-layers") result.scope=TsvObstacleScope::ALL_LAYERS;
             else if(value=="interface") result.scope=TsvObstacleScope::INTERFACE;
             else throw std::runtime_error("tsv-obstacle-scope must be all-layers or interface");
+        }
+        else if (key == "--tsv-shared-cell-limit") {
+            size_t end=0;const long v=std::stol(value,&end);
+            if(end!=value.size() || v<1 || v>64) throw std::runtime_error("tsv-shared-cell-limit must be 1..64");
+            result.tsv.shared_cell_limit=size_t(v);
         }
         else if (key == "--tsv-supply-only") {
             if(value!="0" && value!="1") throw std::runtime_error("tsv-supply-only must be 0 or 1");
@@ -174,6 +180,7 @@ struct Results {
     std::string thermal_mode, tsv_mode, capacity_model;
     bool a150{false},supply_only{false},pin_floor{false};
     uint64_t pin_floor_demand{};
+    size_t shared_cell_limit{1}, shared_landings{}, peak_landing_load{};
     TsvObstacleScope scope{TsvObstacleScope::DISABLED};
     uint64_t interface_violations{},all_layers_violations{},interface_eligible_cells{},all_layers_eligible_cells{},
              selected_eligible_cells{},geometric_cells{},cross_die_nets{},fixed_interface_violations{},fixed_all_layers_violations{};
@@ -192,6 +199,8 @@ std::string report(const Results& result) {
         << ",\"demand\":" << result.pin_floor_demand << ",\"granularity_assumption\":\"per-logical-PIN-layer-GCell\"}"
         << ",\n\"congestion_formula_status\":\"UNCONFIRMED_20261029_CONGESTION_FORMULA\""
         << ",\n\"supply_only\":" << (result.supply_only?"true":"false")
+        << ",\n\"tsv_sharing\":{\"limit\":" << result.shared_cell_limit << ",\"shared_landings\":" << result.shared_landings
+        << ",\"peak_load\":" << result.peak_landing_load << "}"
         << ",\n\"a150\":{\"scope\":" << quoted(tsv_obstacle_scope_name(result.scope))
         << ",\"interface_violations\":" << result.interface_violations
         << ",\"all_layers_violations\":" << result.all_layers_violations
@@ -299,6 +308,7 @@ int main(int argc, char** argv) {
         result.pin_floor=graph.pin_zero_track_floor();result.pin_floor_demand=graph.official_pin_zero_track_floor_total();
         result.scope=config.tsv.tsv_obstacle_scope;result.tsv_mode=config.tsv.resource_mode==TsvResourceMode::GLOBAL_GRID?"global-grid":"supply-audit";
         result.official_model=config.official_model;result.strict_obs=config.strict_obs;
+        result.shared_cell_limit=config.tsv.shared_cell_limit;
         result.score_20261020=config.score_20261020;result.grid_rows=graph.grid().rows;result.grid_cols=graph.grid().cols;
         result.capacity_model=graph.capacity_model();audit_supply(result,graph,def);
         if(config.supply_only) {
@@ -330,7 +340,7 @@ int main(int argc, char** argv) {
             int c = graph.grid().get_col(slot.point.x), r = graph.grid().get_row(slot.point.y);
             if (c >= 0 && r >= 0) slot_cells[r * graph.grid().cols + c].push_back(slot.id);
         }
-        std::set<std::string> expected; std::unordered_map<int, std::string> occupied;
+        std::set<std::string> expected; std::unordered_map<int, std::string> occupied; std::unordered_map<int, int> load;
         for (const auto& net : def.nets()) {
             expected.insert(net.name); ++result.checked_nets;
             auto found = guides.find(net.name);
@@ -465,10 +475,14 @@ int main(int argc, char** argv) {
                 result.fail(net.name + ": TSV reservation mapping has " + std::to_string(matches.size()) + " candidates; unique mapping cannot be verified", result.mapping_errors); continue;
             }
             const int slot = matches.front();
-            if (occupied.contains(slot)) result.fail(net.name + ": TSV reservation reused by " + occupied.at(slot), result.mapping_errors);
+            // One net per landing unless an explicit shared-cell budget is given.
+            const int used = ++load[slot];
+            result.peak_landing_load = std::max(result.peak_landing_load, size_t(used));
+            if (used == 2) ++result.shared_landings;
+            if (used > policy.slot_capacity(slot)) result.fail(net.name + ": TSV reservation reused by " + occupied.at(slot), result.mapping_errors);
             for (int conflict : policy.slots()[slot].conflicts)
                 if (occupied.contains(conflict)) result.fail(net.name + ": geometric TSV conflict with " + occupied.at(conflict), result.mapping_errors);
-            occupied[slot] = net.name;
+            if (used == 1) occupied[slot] = net.name;
         }
         for (const auto& [name, rects] : guides) { (void)rects; if (!expected.contains(name)) result.fail(name + ": unexpected exported net", result.connectivity_errors); }
         emit_report(result,config);return result.errors?1:0;

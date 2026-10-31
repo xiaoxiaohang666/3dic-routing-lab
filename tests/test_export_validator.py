@@ -250,6 +250,24 @@ assert value["errors"]["tsv_mapping"] > 0
 assert any("reservation reused" in message for message in value["error_examples"])
 checks += 2
 
+# Global-grid landings: one net per landing by default; an explicit shared-cell
+# budget (A62/A150 per-net demand) admits a second net in the same GCell.
+full_cell = "n0\n(\n100 100 200 200 metal10\n100 100 200 200 metal11\n)\n"
+global_grid = ("--model", "official", "--tsv-resources", "global-grid")
+value = run(0, contents=full_cell, definition_text=tsv_design(), technology_text=tsv_technology, extra=global_grid)
+assert value["tsv_sharing"] == {"limit": 1, "shared_landings": 0, "peak_load": 1}
+checks += 1
+value = run(1, contents=full_cell + full_cell.replace("n0", "n1"), definition_text=tsv_design(True),
+            technology_text=tsv_technology, extra=global_grid)
+assert any("reservation reused" in message for message in value["error_examples"])
+checks += 1
+value = run(0, contents=full_cell + full_cell.replace("n0", "n1"), definition_text=tsv_design(True),
+            technology_text=tsv_technology, extra=(*global_grid, "--tsv-shared-cell-limit", "2"))
+assert value["tsv_sharing"] == {"limit": 2, "shared_landings": 1, "peak_load": 2}
+checks += 1
+run(2, contents=full_cell, definition_text=tsv_design(), technology_text=tsv_technology,
+    extra=(*global_grid, "--tsv-shared-cell-limit", "0"))
+
 # Uniqueness and geometric reservation conflicts remain enforced in the
 # official model; allowing OBS envelopes is not a waiver of TSV hard rules.
 value = run(1, contents=rounded.replace("112 112 metal11\n", "112 112 metal11\n110 106 115 112 metal11\n"),

@@ -321,6 +321,16 @@ public:
         return result;
     }
 };
+// Hilbert index on a power-of-two square; consecutive indices stay compact.
+uint64_t hilbert_index(uint32_t side,uint32_t x,uint32_t y) {
+    uint64_t d=0;
+    for (uint32_t s=side/2;s>0;s/=2) {
+        const uint32_t rx=(x&s)>0,ry=(y&s)>0;
+        d+=uint64_t(s)*s*((3*rx)^ry);
+        if (!ry) {if (rx) {x=side-1-x;y=side-1-y;} std::swap(x,y);}
+    }
+    return d;
+}
 Point pin_median_anchor(const Net& net) {
     std::vector<double> x,y;x.reserve(net.pins.size());y.reserve(net.pins.size());
     for (const auto& pin:net.pins) {x.push_back(pin.coord.x);y.push_back(pin.coord.y);}
@@ -412,6 +422,11 @@ void TsvPolicy::preflight(const DefParser& def,const LefParser& lef,TsvPolicyOpt
     if (!options.nearest_candidates || options.max_candidates<options.nearest_candidates ||
         options.max_candidates>65536)
         throw std::runtime_error("invalid TSV candidate bounds: require 1 <= initial <= maximum <= 65536");
+    if (!options.shared_cell_limit || options.shared_cell_limit>64 ||
+        options.shared_hot_radius<0 || options.shared_hot_radius>64)
+        throw std::runtime_error("invalid shared TSV cell bounds: limit 1..64, hot radius 0..64");
+    if (options.shared_cell_limit>1 && options.resource_mode!=TsvResourceMode::GLOBAL_GRID)
+        throw std::runtime_error("shared TSV cells require GLOBAL_GRID resources");
     size_t cross=0,bottom=0,top=0;
     for (const auto& net:def.nets()) cross+=net.is_cross_die;
     if (options.resource_mode==TsvResourceMode::GLOBAL_GRID) {
@@ -1030,6 +1045,8 @@ std::vector<int> TsvPolicy::assign_projected(const std::vector<Net>& nets,const 
                     throw std::logic_error("Pareto TSV polish decreased exact Pearson correlation");
             }
             if (options_.assignment_block_refine) refine_occupied_blocks(nets,cross,anchors,chosen);
+            shared_hubs_=shared_members_=shared_peak_load_=0;
+            if (options_.shared_cell_limit>1) share_cells(nets,cross,forced,heat,chosen);
             for (size_t n=0;n<cross.size();++n) {
                 if (!compatible(nets[cross[n]],chosen[n]))
                     throw std::logic_error("sparse projected assignment violates compatible resource policy");
@@ -1044,6 +1061,98 @@ std::vector<int> TsvPolicy::assign_projected(const std::vector<Net>& nets,const 
                 std::to_string(matched)+"/"+std::to_string(cross.size())+", candidates_per_net="+
                 std::to_string(limit)+"; increase --tsv-max-candidates or revise the engineering candidate rule");
         limit=std::min(maximum,std::max(limit+1,limit*2));
+    }
+}
+
+// Experimental multi-net same-cell TSVs. Flexible nets of the unique
+// assignment are grouped in Hilbert order of their landing into groups of at
+// most shared_cell_limit. Each group lands on one unused legal landing that
+// every member may use: the nearest to the group's median cell, or the hottest
+// within shared_hot_radius rings. Fixed interface crossings keep exclusive
+// landings. This builds a candidate layout; the complete score must decide it.
+void TsvPolicy::share_cells(const std::vector<Net>& nets,const std::vector<int>& cross,
+        const std::vector<std::vector<Point>>& forced,const std::vector<double>& heat,
+        std::vector<int>& chosen) const {
+    if (options_.resource_mode!=TsvResourceMode::GLOBAL_GRID)
+        throw std::logic_error("shared TSV cells require GLOBAL_GRID resources");
+    const auto& grid=graph_.grid();
+    const size_t limit=options_.shared_cell_limit;
+    std::vector<int> load(slots_.size(),0);
+    std::vector<size_t> flexible;
+    for (size_t n=0;n<chosen.size();++n) {
+        if (chosen[n]<0 || static_cast<size_t>(chosen[n])>=slots_.size())
+            throw std::logic_error("invalid shared TSV seed assignment");
+        if (forced[n].empty()) flexible.push_back(n);
+        else ++load[static_cast<size_t>(chosen[n])];
+    }
+    uint32_t side=1;
+    while (side<static_cast<uint32_t>(std::max(grid.cols,grid.rows))) side*=2;
+    std::vector<uint64_t> key(chosen.size(),0);
+    for (size_t n:flexible) {
+        const auto& slot=slots_[static_cast<size_t>(chosen[n])];
+        key[n]=hilbert_index(side,uint32_t(graph_.col(slot.lower_node)),uint32_t(graph_.row(slot.lower_node)));
+    }
+    std::stable_sort(flexible.begin(),flexible.end(),[&](size_t a,size_t b) {
+        return key[a]!=key[b]?key[a]<key[b]:a<b;
+    });
+    const int max_ring=std::max(grid.cols,grid.rows);
+    // Ring scan over GCells. Chebyshev ring r holds Manhattan distances r..2r,
+    // so the nearest search stops once the ring reaches the best distance.
+    const auto scan=[&](int c0,int r0,int first,int last,auto& visit) {
+        for (int ring=first;ring<=last;++ring) {
+            for (int r=r0-ring;r<=r0+ring;++r) {
+                const int step=(r==r0-ring || r==r0+ring || ring==0)?1:2*ring;
+                for (int c=c0-ring;c<=c0+ring;c+=step) {
+                    if (r<0 || c<0 || r>=grid.rows || c>=grid.cols) continue;
+                    const int id=global_cell_slots_[static_cast<size_t>(r)*grid.cols+c];
+                    if (id>=0 && enabled_[static_cast<size_t>(id)]) visit(id,std::abs(c-c0)+std::abs(r-r0));
+                }
+            }
+            if (!visit.more(ring)) return;
+        }
+    };
+    for (size_t begin=0;begin<flexible.size();begin+=limit) {
+        const size_t end=std::min(flexible.size(),begin+limit);
+        std::vector<int> cols,rows;
+        for (size_t g=begin;g<end;++g) {
+            const auto& slot=slots_[static_cast<size_t>(chosen[flexible[g]])];
+            cols.push_back(graph_.col(slot.lower_node));rows.push_back(graph_.row(slot.lower_node));
+        }
+        std::nth_element(cols.begin(),cols.begin()+cols.size()/2,cols.end());
+        std::nth_element(rows.begin(),rows.begin()+rows.size()/2,rows.end());
+        const int c0=cols[cols.size()/2],r0=rows[rows.size()/2];
+        const auto admissible=[&](int id) {
+            if (load[static_cast<size_t>(id)]) return false;
+            for (size_t g=begin;g<end;++g) if (!compatible(nets[cross[flexible[g]]],id)) return false;
+            return true;
+        };
+        struct Best {
+            int id{-1},distance{std::numeric_limits<int>::max()};double heat{-1};bool hottest{false};
+            const std::vector<double>* values{nullptr};
+            std::function<bool(int)> admissible;
+            void operator()(int candidate,int d) {
+                if (!admissible(candidate)) return;
+                const double h=(*values)[static_cast<size_t>(candidate)];
+                const bool better=hottest?
+                    (h>heat || (h==heat && (d<distance || (d==distance && candidate<id)))):
+                    (d<distance || (d==distance && candidate<id));
+                if (better) {id=candidate;distance=d;heat=h;}
+            }
+            // The hottest pass covers its whole radius; the nearest pass stops
+            // once no later ring can hold a closer landing.
+            bool more(int ring) const {return hottest || id<0 || ring<distance;}
+        };
+        Best best;best.values=&heat;best.admissible=admissible;
+        if (options_.shared_hot_radius>0) {
+            best.hottest=true;
+            scan(c0,r0,0,options_.shared_hot_radius,best);
+            if (best.id<0) {best.hottest=false;scan(c0,r0,options_.shared_hot_radius+1,max_ring,best);}
+        } else scan(c0,r0,0,max_ring,best);
+        if (best.id<0) throw std::runtime_error("TSV_SHARED_CELLS: no unused legal landing for a group");
+        for (size_t g=begin;g<end;++g) chosen[flexible[g]]=best.id;
+        load[static_cast<size_t>(best.id)]=static_cast<int>(end-begin);
+        ++shared_hubs_;shared_members_+=end-begin;
+        shared_peak_load_=std::max(shared_peak_load_,end-begin);
     }
 }
 

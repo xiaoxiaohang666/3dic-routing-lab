@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <sstream>
 
 using namespace eda;
@@ -35,13 +36,13 @@ std::vector<TsvMoveCandidate> dynamic_tsv_candidates(const TsvMoveSearch&,
 bool tsv_region_accessible(const RoutingGraph&,const SlotCandidate&,const std::vector<int>&);
 }
 struct DynamicTsvTestAccess {
-    static void exact(NegotiatedRouter& r) {
+    static void exact(NegotiatedRouter& r,size_t shared=1) {
         r.complete_validation_cached_=false;r.validate_complete();
         std::vector<NetGuideMetrics> measured;std::vector<int> demand(r.graph_.size());GuideMap guides;
-        std::set<int> slots;
+        std::map<int,size_t> slots;
         for(size_t i=0;i<r.routes_.size();++i) {
             const auto& route=r.routes_[i];
-            if(route.slot>=0) require(slots.insert(route.slot).second,"unique TSV ownership");
+            if(route.slot>=0) require(++slots[route.slot]<=shared,"TSV ownership within the per-landing budget");
             guides[r.def_.nets()[i].name]=route.guides;
             measured.push_back(measure_official_net_guides(r.def_.nets()[i],route.guides,r.graph_,r.lef_,
                 r.options_.official_metrics,r.reference_lengths_[i]));
@@ -164,6 +165,27 @@ struct DynamicTsvTestAccess {
         r.best_metrics_=r.measure();exact(r);
         r.options_=original_options;r.dynamic_tsv_search_.reset();
     }
+    // Shared landings: complete routing, exact count-based Pearson and ledger,
+    // and unique-occupancy TSV move phases left untouched.
+    static void shared_cells(NegotiatedRouter& r,size_t limit) {
+        require(r.policy_.shared_cell_limit()==limit,"router keeps the explicit shared-cell budget");
+        require(r.route_all(),"shared-cell fixture routes completely");
+        std::map<int,size_t> load;size_t cross=0;
+        for(const auto& route:r.routes_) if(route.slot>=0) {++load[route.slot];++cross;}
+        size_t peak=0;for(const auto& [slot,count]:load) {(void)slot;peak=std::max(peak,count);}
+        require(cross==3 && r.best_metrics_.guide.tsv_count==3,"each cross-die net keeps exactly one TSV");
+        require(peak==std::min<size_t>(limit,3) && load.size()==(3+limit-1)/limit,"hub loads follow the group budget");
+        require(r.policy_.shared_hubs()==load.size() && r.policy_.shared_members()==3 && r.policy_.shared_peak_load()==peak,
+                "hub statistics match routed ownership");
+        exact(r,limit);
+        const auto before=geometry(r.routes_);const auto demand=r.demand_;const auto saved=r.options_;
+        r.options_.v7_tsv=true;r.options_.v8_tsv_dynamic=true;r.options_.tsv_rounds=1;r.options_.v7_tsv_seconds=5;
+        r.optimize_dynamic_tsv();r.optimize_v7_tsv();
+        require(geometry(r.routes_)==before && r.demand_==demand,"unique-occupancy TSV moves leave shared hubs untouched");
+        require(r.rejection_reasons_.count("dynamic TSV skipped: shared TSV cells")==1 &&
+                r.rejection_reasons_.count("V7 TSV skipped: shared TSV cells")==1,"skips are recorded");
+        r.options_=saved;exact(r,limit);
+    }
     static void run(NegotiatedRouter& r) {
         require(r.route_all(),"fixture routes completely");exact(r);risk_order(r);
         const auto saved=r.options_;const auto outer_deadline=r.deadline_;
@@ -276,6 +298,15 @@ int main(int argc,char** argv) {
         options.rrr_rounds=options.tsv_rounds=options.wirelength_rounds=0;options.tsv_local=false;
         options.v7_cell_cost=true;options.time_limit=120;
         NegotiatedRouter router(parsed,lef,thermal,options);DynamicTsvTestAccess::run(router);
+        for(size_t limit:{size_t(2),size_t(3)}) {
+            auto shared=options;shared.tsv_policy.shared_cell_limit=limit;
+            NegotiatedRouter shared_router(parsed,lef,thermal,shared);DynamicTsvTestAccess::shared_cells(shared_router,limit);
+        }
+        auto invalid=options;invalid.tsv_policy.shared_cell_limit=2;invalid.future_tsv_reservation=true;
+        invalid.official_metrics.tsv_track_demand=true;bool rejected=false;
+        try {NegotiatedRouter bad(parsed,lef,thermal,invalid);}
+        catch(const std::invalid_argument& error) {rejected=std::string(error.what()).find("shared TSV cells")!=std::string::npos;}
+        require(rejected,"shared landings reject the untested future-reservation combination");
         std::cout<<"dynamic_tsv_tests: "<<checks<<" checks PASS\n";return 0;
     } catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}
 }

@@ -43,6 +43,9 @@ RouterOptions documented_options(RouterOptions o) {
         throw std::invalid_argument("TSV landing pricing requires track demand and dynamic TSV");
     if(o.tsv_finite_quote && !o.tsv_landing_pricing)
         throw std::invalid_argument("finite TSV quote requires track-aware TSV landing pricing");
+    if(o.tsv_policy.shared_cell_limit>1 && (!o.official_model || o.tsv_policy.resource_mode!=TsvResourceMode::GLOBAL_GRID ||
+       o.future_tsv_reservation))
+        throw std::invalid_argument("shared TSV cells require official GLOBAL_GRID routing without future TSV reservations");
     if(o.tsv_landing_rrr && (!o.official_metrics.tsv_track_demand || !o.v8_rrr))
         throw std::invalid_argument("TSV landing RRR requires track demand and hotspot RRR");
     if(o.future_tsv_reservation && !o.official_metrics.tsv_track_demand)
@@ -1894,6 +1897,7 @@ void NegotiatedRouter::optimize_tsv() {
 }
 void NegotiatedRouter::optimize_v7_tsv() {
     if(!options_.v7_tsv || options_.tsv_rounds<=0 || timed_out()) return;
+    if(policy_.shared_cell_limit()>1) {++rejection_reasons_["V7 TSV skipped: shared TSV cells"];return;}
     const auto baseline=measure();
     std::map<size_t,NetRoute> journal;
     try {
@@ -1994,7 +1998,7 @@ void NegotiatedRouter::validate_complete() const {
     }
     ++complete_validations_;
     const auto validation_started=std::chrono::steady_clock::now();
-    GuideMap all;std::set<int> occupied;
+    GuideMap all;std::map<int,int> occupied;
     std::vector<int> expected_demand(large_design()?graph_.size():0);
     for(size_t i=0;i<routes_.size();++i) {
         const auto& r=routes_[i];std::string error;
@@ -2013,8 +2017,11 @@ void NegotiatedRouter::validate_complete() const {
         }
         if(!policy_.validate_mapping(def_.nets()[i],r.guides,r.slot,error)) throw std::runtime_error("TSV_MAPPING_UNRESOLVED: "+error);
         if(r.slot>=0) {
-            if(!occupied.insert(r.slot).second) throw std::runtime_error("SLOT_CAPACITY: duplicate assignment");
-            for(int conflict:policy_.slots()[r.slot].conflicts) if(occupied.count(conflict))
+            // One net per landing unless the explicit shared-cell experiment
+            // raises the per-landing net budget (A62/A150 per-net demand).
+            const int load=++occupied[r.slot];
+            if(load>policy_.slot_capacity(r.slot)) throw std::runtime_error("SLOT_CAPACITY: duplicate assignment");
+            if(load==1) for(int conflict:policy_.slots()[r.slot].conflicts) if(occupied.count(conflict))
                 throw std::runtime_error("SLOT_CAPACITY: geometric conflict");
         }
         all[def_.nets()[i].name]=r.guides;
@@ -2361,7 +2368,11 @@ bool NegotiatedRouter::export_stats(const std::string& path) const {
            <<",\"assignment_block_budget_exhausted\":"<<(policy_.assignment_block_budget_exhausted()?"true":"false")
            <<",\"assignment_block_seconds\":"<<policy_.assignment_block_seconds()
                   <<",\"max_anchor_displacement_dbu\":"<<policy_.assignment_max_displacement_dbu()
-           <<",\"slot_capacity\":1,\"tsv_per_cross_net\":1,\"status\":\"engineering global-routing model\"},\n\"metrics\":";
+           <<",\"slot_capacity\":"<<policy_.shared_cell_limit()
+           <<",\"shared_cells\":{\"limit\":"<<policy_.shared_cell_limit()<<",\"hot_radius\":"<<options_.tsv_policy.shared_hot_radius
+           <<",\"hubs\":"<<policy_.shared_hubs()<<",\"members\":"<<policy_.shared_members()<<",\"peak_load\":"<<policy_.shared_peak_load()
+           <<",\"tsv_move_phases\":\""<<(policy_.shared_cell_limit()>1?"skipped-unique-occupancy-assumption":"enabled-as-configured")<<"\"}"
+           <<",\"tsv_per_cross_net\":1,\"status\":\"engineering global-routing model\"},\n\"metrics\":";
         metrics(best_metrics_);out<<",\n\"initial_metrics\":";metrics(initial_metrics_);
         if(options_.official_model) {out<<",\n\"wirelength_breakdown\":";write_cost_diagnostics(out,routes_,def_.nets(),pre_tsv_lengths_);}
         out<<",\n\"pre_recovery_metrics\":";metrics(pre_recovery_metrics_);
