@@ -78,7 +78,8 @@ void usage(const char* p) {
         <<"--official-runtime DIR --nonpreferred 0|1 (official Guide model)\n"
         <<"--objective-profile documented|site-20261029 (explicit G; all real overlaps; resource alignment pending)\n"
         <<"--thermal-gain G (>0; default 20 is a uniform proxy, never inferred from filename)\n"
-        <<"--thermal-gain-estimate hottest-k (no official G: use 1.5 / hottest-K Pearson bound as an optimisation proxy)\n"
+        <<"--thermal-gain-estimate hottest-k (no official G: use 1.5 / hottest-K Pearson bound as an optimisation proxy;\n"
+        <<"    the later of --thermal-gain and --thermal-gain-estimate wins)\n"
         <<"--tsv-assignment-polish 0|1 (default 0; projected resource move/swap proxy optimization)\n"
         <<"--tsv-polish-thermal weighted|pareto (default weighted; pareto requires official model)\n"
         <<"--tsv-polish-heat-weight NUMBER (default 2; experimental proxy, requires polish 1)\n"
@@ -159,10 +160,11 @@ int main(int argc,char** argv) {
                 size_t end=0;const double gain=std::stod(value,&end);
                 if(end!=value.size()||!std::isfinite(gain)||gain<=0||gain>1e6) throw std::runtime_error("thermal gain out of range");
                 options.official_metrics.thermal_gain=gain;options.explicit_thermal_gain=true;
+                gain_estimate=false; // the later of --thermal-gain / --thermal-gain-estimate wins
             }
             else if(arg=="--thermal-gain-estimate") {
                 if(value!="hottest-k") throw std::runtime_error("thermal-gain-estimate must be hottest-k");
-                gain_estimate=true;
+                gain_estimate=true;options.explicit_thermal_gain=false;
             }
             else if(arg=="--router") {if(value!="baseline"&&value!="negotiated") throw std::runtime_error("invalid router");kind=value;}
             else if(arg=="--rrr-rounds") options.rrr_rounds=integer(value);
@@ -497,8 +499,8 @@ int main(int argc,char** argv) {
         }
         if(options.tsv_landing_rrr && (!options.official_metrics.tsv_track_demand || !options.v8_rrr))
             throw std::runtime_error("TSV landing RRR requires --tsv-track-demand 1 --v8-rrr 1");
-        if(gain_estimate && (options.explicit_thermal_gain || !options.official_model))
-            throw std::runtime_error("--thermal-gain-estimate needs the official model and excludes --thermal-gain");
+        if(gain_estimate && !options.official_model)
+            throw std::runtime_error("--thermal-gain-estimate needs the official model");
         if(objective_profile!="documented") {
             if(!options.official_model || !(options.explicit_thermal_gain || gain_estimate) || options.graph_options.platform_20261024)
                 throw std::runtime_error("site scalar objective requires official documented resources and explicit --thermal-gain or --thermal-gain-estimate");
