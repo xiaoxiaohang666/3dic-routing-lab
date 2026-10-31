@@ -78,6 +78,7 @@ void usage(const char* p) {
         <<"--official-runtime DIR --nonpreferred 0|1 (official Guide model)\n"
         <<"--objective-profile documented|site-20261029 (explicit G; all real overlaps; resource alignment pending)\n"
         <<"--thermal-gain G (>0; default 20 is a uniform proxy, never inferred from filename)\n"
+        <<"--thermal-gain-estimate hottest-k (no official G: use 1.5 / hottest-K Pearson bound as an optimisation proxy)\n"
         <<"--tsv-assignment-polish 0|1 (default 0; projected resource move/swap proxy optimization)\n"
         <<"--tsv-polish-thermal weighted|pareto (default weighted; pareto requires official model)\n"
         <<"--tsv-polish-heat-weight NUMBER (default 2; experimental proxy, requires polish 1)\n"
@@ -108,7 +109,7 @@ int main(int argc,char** argv) {
     try {
         if(argc<2) {usage(argv[0]);return 1;}
         std::string def_file,thermal_file,output="output/result.guide",stats,kind="negotiated";
-        std::vector<std::string> lefs;eda::RouterOptions options;bool explicit_time=false,explicit_polish_heat=false,explicit_polish_thermal=false,explicit_polish_budget=false,explicit_rrr_limit=false,explicit_recovery_budget=false;
+        std::vector<std::string> lefs;eda::RouterOptions options;bool explicit_time=false,gain_estimate=false,explicit_polish_heat=false,explicit_polish_thermal=false,explicit_polish_budget=false,explicit_rrr_limit=false,explicit_recovery_budget=false;
         bool explicit_block_budget=false,explicit_topology_budget=false,explicit_nonpreferred=false,explicit_v7_budget=false,explicit_v7_tsv_budget=false;
         options.process_started=std::chrono::steady_clock::now();
         std::set<std::string> explicit_v8,explicit_v9;
@@ -117,7 +118,7 @@ int main(int argc,char** argv) {
         for(int i=1;i<argc;++i) {
             std::string arg=argv[i];if(arg=="--help"||arg=="-h") {usage(argv[0]);return 0;}
             const std::set<std::string> recognized={"--def","--input-def","--lef","--lefs","--thermal-report","--thermal-json",
-                "--rules-profile","--tsv-obstacle-scope","--output","-o","--stats","--router","--rrr-rounds","--rrr-score-aware","--rrr-net-limit","--tsv-rounds","--search","--time-limit","--search-limit","--local-repair","--wirelength-rounds","--pin-local","--tsv-local","--tsv-resource-mode","--tsv-candidates","--tsv-max-candidates","--cell-pin-access","--fast-initial","--fast-quality","--fast-layer-pruning","--model","--official-runtime","--thermal-gain","--official-score-pricing","--nonpreferred","--tsv-assignment-polish","--tsv-polish-heat-weight","--tsv-polish-thermal","--tsv-polish-candidates","--tsv-polish-passes","--tsv-polish-bidirectional","--tsv-polish-thermal-candidates","--tsv-shared-cell-limit","--tsv-shared-hot-radius"};
+                "--rules-profile","--tsv-obstacle-scope","--output","-o","--stats","--router","--rrr-rounds","--rrr-score-aware","--rrr-net-limit","--tsv-rounds","--search","--time-limit","--search-limit","--local-repair","--wirelength-rounds","--pin-local","--tsv-local","--tsv-resource-mode","--tsv-candidates","--tsv-max-candidates","--cell-pin-access","--fast-initial","--fast-quality","--fast-layer-pruning","--model","--official-runtime","--thermal-gain","--official-score-pricing","--nonpreferred","--tsv-assignment-polish","--tsv-polish-heat-weight","--tsv-polish-thermal","--tsv-polish-candidates","--tsv-polish-passes","--tsv-polish-bidirectional","--tsv-polish-thermal-candidates","--tsv-shared-cell-limit","--tsv-shared-hot-radius","--thermal-gain-estimate"};
             const std::set<std::string> recovery_options={"--large-recovery","--large-recovery-nets","--large-recovery-rounds","--large-recovery-seconds","--large-recovery-branches"};
             const std::set<std::string> v5_options={"--tsv-block-refine","--tsv-block-size","--tsv-block-passes","--tsv-block-max-groups","--tsv-block-max-evals","--tsv-block-seconds","--v5-pin-rooted","--v5-topology-max-pins"};
             const std::set<std::string> v7_options={"--v7-topology","--v7-rrr","--v7-rrr-net-limit","--v7-rrr-astar-net-limit","--v7-rrr-astar-expansions","--v7-rrr-astar-seconds","--v7-cell-cost","--resource-profile","--v7-tsv","--v7-tsv-nets","--v7-tsv-candidates","--v7-tsv-seconds"};
@@ -157,6 +158,10 @@ int main(int argc,char** argv) {
                 size_t end=0;const double gain=std::stod(value,&end);
                 if(end!=value.size()||!std::isfinite(gain)||gain<=0||gain>1e6) throw std::runtime_error("thermal gain out of range");
                 options.official_metrics.thermal_gain=gain;options.explicit_thermal_gain=true;
+            }
+            else if(arg=="--thermal-gain-estimate") {
+                if(value!="hottest-k") throw std::runtime_error("thermal-gain-estimate must be hottest-k");
+                gain_estimate=true;
             }
             else if(arg=="--router") {if(value!="baseline"&&value!="negotiated") throw std::runtime_error("invalid router");kind=value;}
             else if(arg=="--rrr-rounds") options.rrr_rounds=integer(value);
@@ -479,9 +484,11 @@ int main(int argc,char** argv) {
             throw std::runtime_error("--tsv-finite-quote 1 requires --tsv-landing-pricing 1");
         if(options.tsv_landing_rrr && (!options.official_metrics.tsv_track_demand || !options.v8_rrr))
             throw std::runtime_error("TSV landing RRR requires --tsv-track-demand 1 --v8-rrr 1");
+        if(gain_estimate && (options.explicit_thermal_gain || !options.official_model))
+            throw std::runtime_error("--thermal-gain-estimate needs the official model and excludes --thermal-gain");
         if(objective_profile!="documented") {
-            if(!options.official_model || !options.explicit_thermal_gain || options.graph_options.platform_20261024)
-                throw std::runtime_error("site scalar objective requires official documented resources and explicit --thermal-gain");
+            if(!options.official_model || !(options.explicit_thermal_gain || gain_estimate) || options.graph_options.platform_20261024)
+                throw std::runtime_error("site scalar objective requires official documented resources and explicit --thermal-gain or --thermal-gain-estimate");
             options.graph_options.congestion_overflow_scale=1.0;
             options.official_metrics.all_adjacent_overlaps=true;
             options.official_metrics.snap_reference_coordinates=true;
@@ -583,6 +590,15 @@ int main(int argc,char** argv) {
         if(options.official_model) {
             if(kind!="negotiated") throw std::runtime_error("official model requires negotiated router");
             options.graph_options.geometry=eda::RoutingGeometryMode::GLOBAL_GUIDE;
+            if(gain_estimate) {
+                size_t cross=0;for(const auto& net:def.nets()) cross+=net.is_cross_die;
+                if(const auto estimate=eda::hottest_k_thermal_gain(thermal,def.gcell_grid(),cross)) {
+                    options.official_metrics.thermal_gain=*estimate;
+                    options.explicit_thermal_gain=options.estimated_thermal_gain=true;
+                    std::cerr<<"[MODEL] Thermal gain estimate "<<*estimate<<" = 1.5 / hottest-K Pearson bound (K="<<cross
+                             <<"); an optimisation proxy, not the official per-case G.\n";
+                } else std::cerr<<"[MODEL] Degenerate heat/TSV count: thermal score is constant; keeping G 20.\n";
+            }
             if(!options.explicit_thermal_gain)
                 std::cerr<<"[MODEL] Thermal gain 20 is a uniform proxy; official G_case is not specified by the text.\n";
             options.official_metrics.gcell_width_dbu=def.gcell_pitch_x();

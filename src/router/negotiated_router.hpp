@@ -88,6 +88,7 @@ struct RouterOptions {
     OfficialMetricOptions official_metrics;
     std::string official_runtime;
     bool explicit_thermal_gain{false};
+    bool estimated_thermal_gain{false}; // thermal_gain came from hottest_k_thermal_gain
 };
 // Audit of dynamic TSV landing quotes. "derivative" is the historical live-Q
 // derivative quote evaluated on the same candidate pool for comparison only.

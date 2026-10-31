@@ -1,5 +1,8 @@
 #include "objectives/official_metrics.hpp"
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
+#include <vector>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -75,6 +78,23 @@ int main(int argc,char**argv){try{
     near(official_thermal_gain_for_def_file("/scratch/open_3d_case001.input.def"),11.684,"original DEF alias gain");
     near(official_thermal_gain_for_def_file("toy.input.def"),21.492,"toy gain");
     near(official_thermal_gain_for_def_file("renamed.def"),20,"unknown name falls back to original default");
+    {
+        // Hottest-K gain proxy: 1.5 over the binary Pearson bound, recomputed here.
+        std::vector<double> h;const auto& g=def.gcell_grid();
+        for(int r=0;r<g.rows;++r) for(int c=0;c<g.cols;++c) h.push_back(std::max(0.0,heat.get_temperature(c,r)-heat.ambient_temperature()));
+        const double n=double(h.size());double mean=0;for(double x:h) mean+=x/n;
+        double squares=0;for(double x:h) squares+=(x-mean)*(x-mean);
+        auto sorted=h;std::sort(sorted.rbegin(),sorted.rend());
+        for(size_t k:{size_t(1),size_t(2),size_t(4)}) {
+            double top=0;for(size_t i=0;i<k;++i) top+=sorted[i];
+            const double bound=(top-k*mean)/std::sqrt(squares*k*(1-k/n));
+            const auto estimate=hottest_k_thermal_gain(heat,g,k);
+            require(estimate.has_value(),"nondegenerate heat yields a gain estimate");
+            near(*estimate,1.5/bound,"gain estimate equals 1.5 over the hottest-K bound");
+        }
+        require(!hottest_k_thermal_gain(heat,g,0) && !hottest_k_thermal_gain(heat,g,h.size()),
+                "no TSVs or TSVs in every cell give no estimate");
+    }
     if(argc>2){
         NativeFluteBaseline flute(argv[2]);require(flute.max_degree()==150,"actual native degree limit");
         const auto line=flute.evaluate_points({{0,0},{10,0}});near(line.wirelength_dbu,10,"original FLUTE line cost");require(line.via_count==1,"original FLUTE line via count (not geometric corner guess)");

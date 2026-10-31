@@ -278,6 +278,25 @@ double NativeFluteBaseline::measure_net(const Net& net,double pitch,const Offici
     return f.wirelength_dbu+(f.via_count+(net.is_cross_die?10:0))*o.via_cost_ratio*pitch+
         (net.is_cross_die?o.tsv_cost_ratio*pitch:0.0);
 }
+std::optional<double> hottest_k_thermal_gain(const ThermalParser& thermal,const GCellGrid& grid,size_t k) {
+    const size_t cells=size_t(std::max(0,grid.cols))*size_t(std::max(0,grid.rows));
+    if(!k || k>=cells) return std::nullopt;
+    std::vector<double> heat;heat.reserve(cells);long double sum=0;
+    for(int row=0;row<grid.rows;++row) for(int col=0;col<grid.cols;++col) {
+        const double h=std::max(0.0,thermal.get_temperature(col,row)-thermal.ambient_temperature());
+        if(!std::isfinite(h)) return std::nullopt;
+        heat.push_back(h);sum+=h;
+    }
+    const long double mean=sum/cells;long double squares=0;
+    for(double h:heat) squares+=(h-mean)*(h-mean);
+    std::nth_element(heat.begin(),heat.begin()+std::ptrdiff_t(k),heat.end(),std::greater<double>());
+    long double top=0;for(size_t i=0;i<k;++i) top+=heat[i];
+    const long double denominator=std::sqrt(squares*k*(1-(long double)k/cells));
+    if(!(denominator>0)) return std::nullopt;
+    const long double bound=(top-k*mean)/denominator;
+    if(!(bound>0) || !std::isfinite(double(bound))) return std::nullopt;
+    return double(1.5L/bound);
+}
 double official_thermal_gain_for_def_file(const std::string& path) {
     const auto name=std::filesystem::path(path).filename().string();
     static const std::map<std::string,double> table{

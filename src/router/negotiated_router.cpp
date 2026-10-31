@@ -2320,7 +2320,8 @@ bool NegotiatedRouter::export_stats(const std::string& path) const {
            <<",\n\"all_adjacent_overlaps\":"<<(options_.official_metrics.all_adjacent_overlaps?"true":"false")
            <<",\n\"snap_reference_coordinates\":"<<(options_.official_metrics.snap_reference_coordinates?"true":"false")
            <<",\n\"resource_alignment_passed\":false"
-           <<",\n\"thermal_gain_source\":"<<json_string(options_.explicit_thermal_gain?"explicit-parameter-not-independently-verified":"uniform-proxy-not-official-calibration")
+           <<",\n\"thermal_gain_source\":"<<json_string(options_.estimated_thermal_gain?"estimated-1.5-over-hottest-K-bound-proxy":
+               options_.explicit_thermal_gain?"explicit-parameter-not-independently-verified":"uniform-proxy-not-official-calibration")
            <<",\n\"zero_capacity_routing_policy\":"<<json_string(graph_.documented_rules()?"reject-new-nonexempt-demand":"historical-proxy")
            <<",\n\"large_design_schedule\":"<<(large_design()?"true":"false")
            <<",\n\"input_mapping\":{\"thermal\":"<<json_string(thermal_.mapping_mode())

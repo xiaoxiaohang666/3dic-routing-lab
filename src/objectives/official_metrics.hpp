@@ -2,6 +2,7 @@
 
 #include "objectives/guide_metrics.hpp"
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -59,6 +60,13 @@ private:
     struct Impl;
     std::shared_ptr<Impl> impl_;
 };
+
+// Internal thermal-gain proxy for runs that receive no official G: 1.5 over the
+// hottest-K Pearson bound (K = cross-die nets, unit TSV counts, heat above
+// ambient on the GCell grid). On public inputs it is within about 2% of the
+// official G for toy/case001/case005 and 9% for case003. It only weights the
+// optimiser's T term; it is not an official calibration. Empty if degenerate.
+std::optional<double> hottest_k_thermal_gain(const ThermalParser& thermal,const GCellGrid& grid,size_t cross_nets);
 
 // Historical diagnostic helper only; production routing never calls it.
 // The published text does not provide this table or filename selection rule.

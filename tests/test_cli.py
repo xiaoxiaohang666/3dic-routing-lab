@@ -38,6 +38,7 @@ class CliTests(unittest.TestCase):
         result = self.run_cli(["--help"], success=True)
         self.assertIn("--tsv-finite-quote", result.stdout + result.stderr)
         self.assertIn("--tsv-shared-cell-limit", result.stdout + result.stderr)
+        self.assertIn("--thermal-gain-estimate", result.stdout + result.stderr)
 
     def test_invalid_arguments(self):
         for args in [[], ["--unknown"], ["--input-def"], ["--input-def", "--lefs", "a"],
@@ -46,7 +47,10 @@ class CliTests(unittest.TestCase):
                      [*INPUTS, "--tsv-finite-quote", "2"], [*INPUTS, "--tsv-finite-quote", "1"],
                      # Shared TSV landings are a bounded explicit experiment budget.
                      [*INPUTS, "--tsv-shared-cell-limit", "0"], [*INPUTS, "--tsv-shared-cell-limit", "65"],
-                     [*INPUTS, "--tsv-shared-hot-radius", "65"]]:
+                     [*INPUTS, "--tsv-shared-hot-radius", "65"],
+                     # The G proxy needs the official model and excludes an explicit G.
+                     [*INPUTS, "--thermal-gain-estimate", "hottest-k"],
+                     [*INPUTS, "--thermal-gain-estimate", "median"]]:
             with self.subTest(args=args):
                 self.run_cli(args)
 
