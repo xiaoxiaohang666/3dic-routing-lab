@@ -4,6 +4,7 @@
 // PIN/OBS landing ban. Wirelength changes use a terminal-attachment proxy and
 // congestion is ignored, so every estimate is an optimistic planning number.
 #include "objectives/official_metrics.hpp"
+#include "objectives/net_cell_contribution.hpp"
 #include "scoring/compat_validation.hpp"
 #include <algorithm>
 #include <cmath>
@@ -43,6 +44,16 @@ double capped_bound(const Pearson& p,const std::vector<size_t>& legal_by_heat,si
     if(left) return std::nan("");
     return p.rho(counts);
 }
+// Hilbert index on a power-of-two square; groups consecutive TSVs compactly.
+uint64_t hilbert(uint32_t side,uint32_t x,uint32_t y) {
+    uint64_t d=0;
+    for(uint32_t s=side/2;s>0;s/=2) {
+        const uint32_t rx=(x&s)>0,ry=(y&s)>0;
+        d+=uint64_t(s)*s*((3*rx)^ry);
+        if(!ry) {if(rx) {x=side-1-x;y=side-1-y;} std::swap(x,y);}
+    }
+    return d;
+}
 std::vector<int> parse_list(const std::string& text) {
     std::vector<int> values;std::stringstream in(text);std::string item;
     while(std::getline(in,item,',')) values.push_back(std::stoi(item));
@@ -51,8 +62,8 @@ std::vector<int> parse_list(const std::string& text) {
 }
 int main(int argc,char** argv) {
  try {
-    std::string def_file,thermal_file,guide_file,output,radii_text="2,4,8,16,32";
-    std::vector<std::string> lefs;double gain=0,length=0,reference=0,detour=2;
+    std::string def_file,thermal_file,guide_file,output,radii_text="2,4,8,16,32",stacks_text="2,4,8,16,32";
+    std::vector<std::string> lefs;double gain=0,length=0,reference=0,detour=2,live_q=-1;
     for(int i=1;i<argc;++i) {
         const std::string key=argv[i];
         if(i+1>=argc) throw std::runtime_error("expected option value");
@@ -63,6 +74,7 @@ int main(int argc,char** argv) {
         else if(key=="--thermal-gain") gain=std::stod(value);
         else if(key=="--length") length=std::stod(value);else if(key=="--reference") reference=std::stod(value);
         else if(key=="--detour-factor") detour=std::stod(value);
+        else if(key=="--q") live_q=std::stod(value);else if(key=="--stack-sizes") stacks_text=value;
         else throw std::runtime_error("unknown option "+key);
     }
     if(def_file.empty()||lefs.empty()||thermal_file.empty()||guide_file.empty()||output.empty()||
@@ -257,7 +269,74 @@ int main(int argc,char** argv) {
         first=false;
         std::cerr<<"radius="<<radius<<" scale="<<lambda_scale<<" moves="<<moves<<" rho="<<rho<<" dS="<<dT+dW<<'\n';
     }
-    out<<"]}\n";out.close();if(!out) throw std::runtime_error("output write failed");
+    out<<"]";
+    // Multi-net same-cell TSVs (A62/A150 allow them; demand adds per net).
+    // Consecutive TSVs along a Hilbert curve form groups of at most `stack`;
+    // each group lands on one legal hub cell. Q counts only the stacked TSV
+    // interface demand on top of the supplied live Q, so C is optimistic.
+    if(live_q>=0) {
+        uint32_t side=1;while(side<uint32_t(std::max(cols,rows))) side*=2;
+        std::vector<size_t> by_curve(k);std::iota(by_curve.begin(),by_curve.end(),size_t(0));
+        std::vector<uint64_t> key(k);
+        for(size_t n=0;n<k;++n) key[n]=hilbert(side,uint32_t(cross[n].cell%size_t(cols)),uint32_t(cross[n].cell/size_t(cols)));
+        std::sort(by_curve.begin(),by_curve.end(),[&](size_t a,size_t b){return key[a]!=key[b]?key[a]<key[b]:a<b;});
+        const auto nearest_legal=[&](int c0,int r0,int hot_radius) {
+            size_t found=cells;double best_heat=-1,best_distance=std::numeric_limits<double>::infinity();
+            for(int ring=0;ring<=std::max(cols,rows);++ring) {
+                for(int r=r0-ring;r<=r0+ring;++r) for(int c=c0-ring;c<=c0+ring;c+=(r==r0-ring||r==r0+ring||ring==0)?1:2*ring) {
+                    if(r<0||c<0||r>=rows||c>=cols) continue;
+                    const size_t cell=size_t(r)*cols+c;if(!legal[cell]) continue;
+                    const double distance=std::abs(c-c0)+std::abs(r-r0);
+                    if(hot_radius>0 ? (heat[cell]>best_heat || (heat[cell]==best_heat && distance<best_distance))
+                                    : distance<best_distance) {best_heat=heat[cell];best_distance=distance;found=cell;}
+                }
+                if(found!=cells && ring>=hot_radius) break;
+            }
+            return found;
+        };
+        const auto interface_q=[&](size_t cell,int count) {
+            const Point p=center(cell);long double q=0;
+            for(int layer:{10,11}) {
+                const int node=graph.node(int(cell%size_t(cols)),int(cell/size_t(cols)),layer);
+                const int tracks=graph.tsv_landing_tracks(p,layer);
+                q+=official_resource_cell_contribution(graph,node,tracks*count).squared;
+            }
+            return q;
+        };
+        long double unique_q=0;for(const auto& item:cross) unique_q+=interface_q(item.cell,1);
+        out<<",\n\"stacking\":{\"live_q\":"<<live_q<<",\"unique_tsv_interface_q\":"<<double(unique_q)<<",\"sweeps\":[";
+        bool first_stack=true;
+        for(int stack:parse_list(stacks_text)) for(int hot_radius:{0,3}) {
+            std::vector<int> stacked(cells,0);double added=0;long double stacked_q=0;size_t hubs=0;
+            for(size_t begin=0;begin<k;begin+=size_t(stack)) {
+                const size_t end=std::min(k,begin+size_t(stack));
+                std::vector<int> cs,rs;
+                for(size_t g=begin;g<end;++g) {const auto& item=cross[by_curve[g]];cs.push_back(int(item.cell%size_t(cols)));rs.push_back(int(item.cell/size_t(cols)));}
+                std::nth_element(cs.begin(),cs.begin()+cs.size()/2,cs.end());std::nth_element(rs.begin(),rs.begin()+rs.size()/2,rs.end());
+                const size_t hub=nearest_legal(cs[cs.size()/2],rs[rs.size()/2],hot_radius);
+                if(hub==cells) throw std::runtime_error("no legal hub cell");
+                const Point to=center(hub);
+                for(size_t g=begin;g<end;++g) {
+                    const auto& item=cross[by_curve[g]];const Point from=center(item.cell);
+                    added+=detour*(side_cost(item.bottom,to)+side_cost(item.top,to)-side_cost(item.bottom,from)-side_cost(item.top,from));
+                }
+                stacked[hub]+=int(end-begin);++hubs;
+            }
+            for(size_t cell=0;cell<cells;++cell) if(stacked[cell]) stacked_q+=interface_q(cell,stacked[cell]);
+            const double rho=pearson.rho(stacked);
+            const double q=std::max(0.0,live_q+double(stacked_q-unique_q));
+            const double dT=.25*(thermal_score(gain,rho)-thermal_score(gain,rho0));
+            const double dW=.45*(wirelength_score(length+added,reference)-wirelength_score(length,reference));
+            const double dC=30*(1/std::sqrt(1+q)-1/std::sqrt(1+live_q));
+            out<<(first_stack?"":",")<<"\n {\"stack\":"<<stack<<",\"hot_radius\":"<<hot_radius<<",\"hubs\":"<<hubs
+               <<",\"rho\":"<<rho<<",\"T\":"<<thermal_score(gain,rho)<<",\"added_length_proxy\":"<<added
+               <<",\"Q_est\":"<<q<<",\"C_est\":"<<100/std::sqrt(1+q)
+               <<",\"dS_T\":"<<dT<<",\"dS_W\":"<<dW<<",\"dS_C\":"<<dC<<",\"dS_est\":"<<dT+dW+dC<<'}';
+            first_stack=false;
+        }
+        out<<"]}";
+    }
+    out<<"}\n";out.close();if(!out) throw std::runtime_error("output write failed");
     std::cout<<"TSV thermal diagnostic K="<<k<<" rho="<<rho0<<" legal="<<legal_count<<'\n';
     return 0;
  } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}
