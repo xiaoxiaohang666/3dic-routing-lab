@@ -1,4 +1,5 @@
 #include "router/negotiated_router.hpp"
+#include "objectives/net_cell_contribution.hpp"
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -254,6 +255,35 @@ struct PinLocalTestAccess {
                 "independent full score proves guide-owner removal cannot clear fixed bad cell");
         check_cache(router);
     }
+    // Checkpoint recovery rebuilds the ledger from fixed demand plus every
+    // route. Under the site scalar (scale 1) a fixed-only overfull cell must
+    // keep the same penalty as construction, not a historical 0.1 scale.
+    static void check_fixed_ledger_reset(NegotiatedRouter& router) {
+        const int fixed=router.graph_.node(0,0,1);
+        require(router.graph_.congestion_overflow_scale()==1.0,"reset fixture uses the site congestion scale");
+        require(router.graph_.official_capacity(fixed)==20 && router.graph_.official_obstacle_demand(fixed)==40,
+                "fixed-only overfull cell present");
+        near(double(official_resource_cell_contribution(router.graph_,fixed,0).squared),1.0,
+             "scale-one fixed-only penalty is ((40-20)/20)^2");
+        check_cache(router);
+        const auto constructed=snapshot(router);
+        require(router.official_squared_overflow_>=1.0L,"constructed ledger includes the scale-one fixed penalty");
+        router.routes_.resize(router.def_.nets().size());
+        NetRoute local;
+        local.measured=measure_official_net_guides(router.def_.nets()[1],{{45,45,255,55,"metal1"}},
+            router.graph_,router.lef_,router.options_.official_metrics,router.reference_lengths_[1]);
+        router.account(1,local,1);router.routes_[1]=local;check_cache(router);
+        const auto routed=snapshot(router);
+        // Rebuild exactly like restore_rrr_checkpoint: clear, fixed, re-account.
+        std::fill(router.demand_.begin(),router.demand_.end(),0);router.usage_.clear();
+        router.cell_nets_.clear();router.edge_nets_.clear();
+        router.reset_official_fixed_ledger();
+        require(snapshot(router)==constructed,"fixed reset equals the constructed empty ledger");
+        router.account(1,router.routes_[1],1);
+        require(snapshot(router)==routed,"fixed reset plus re-account restores the routed ledger exactly");
+        check_cache(router);
+        router.account(1,router.routes_[1],-1);router.routes_[1]=NetRoute{};
+    }
     static void check(NegotiatedRouter& router,bool official,bool large) {
         require(router.large_design()==large,"small/large schedule boundary exercised");
         router.routes_.resize(router.def_.nets().size());
@@ -438,6 +468,9 @@ int main(int argc,char** argv) {
                     require(fixed_def.parse(write(folder/"fixed-zero.def",fixed_design),fixed_lef),"fixed-zero DEF parsed");
                     NegotiatedRouter fixed_router(fixed_def,fixed_lef,thermal,options);
                     PinLocalTestAccess::check_fixed_zero(fixed_router);
+                    auto site=options;site.graph_options.congestion_overflow_scale=1.0;
+                    NegotiatedRouter site_router(def,lef,thermal,site);
+                    PinLocalTestAccess::check_fixed_ledger_reset(site_router);
                 }
             }
         }

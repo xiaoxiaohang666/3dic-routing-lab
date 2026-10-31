@@ -106,12 +106,7 @@ NegotiatedRouter::NegotiatedRouter(const DefParser& d,const LefParser& l,const T
        options_.tsv_policy.resource_mode!=TsvResourceMode::GLOBAL_GRID))
         throw std::invalid_argument("V7 TSV refinement requires official 20261020 global-grid routing");
     if(options_.official_model) {
-        for(size_t n=0;n<demand_.size();++n) {
-            const auto cell=official_resource_cell_contribution(graph_,int(n),0);
-            official_overflow_+=cell.overflow;
-            official_squared_overflow_+=cell.squared;
-            official_zero_capacity_cells_+=cell.zero_capacity;
-        }
+        reset_official_fixed_ledger();
         flute_=std::make_unique<NativeFluteBaseline>(options_.official_runtime);
         const double step=std::max(options_.official_metrics.gcell_width_dbu,options_.official_metrics.gcell_height_dbu);
         for(const auto& net:def_.nets()) {
@@ -139,6 +134,17 @@ bool NegotiatedRouter::v7_search_budget_available() const {
     return v7_refinement_active_ && !timed_out() &&
            counters_.expansions-v7_refinement_expansion_start_<options_.v7_rrr_astar_expansions &&
            std::chrono::steady_clock::now()<v7_refinement_deadline_;
+}
+void NegotiatedRouter::reset_official_fixed_ledger() {
+    official_wirelength_=0;official_reference_=0;official_squared_overflow_=0;
+    official_overflow_=0;official_zero_capacity_cells_=0;
+    for(size_t node=0;node<graph_.size();++node) {
+        if(!graph_.official_obstacle_demand(int(node))) continue;
+        const auto cell=official_resource_cell_contribution(graph_,int(node),0);
+        official_overflow_+=cell.overflow;
+        official_squared_overflow_+=cell.squared;
+        official_zero_capacity_cells_+=cell.zero_capacity;
+    }
 }
 void NegotiatedRouter::verify_official_ledger(const CompleteMetrics& exact) {
     if(!options_.official_model) return;

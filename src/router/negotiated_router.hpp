@@ -312,6 +312,9 @@ private:
 
     bool v7_search_budget_available() const;
     void verify_official_ledger(const CompleteMetrics&);
+    // Zero every official total, then add fixed PIN/OBS demand once through the
+    // shared cell contract. Construction and checkpoint rebuilds both use it.
+    void reset_official_fixed_ledger();
     BudgetedRecoveryStats recovery_stats_;
     bool large_design() const { return def_.nets().size()>1000; }
     bool timed_out() const;

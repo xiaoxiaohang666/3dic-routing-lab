@@ -124,18 +124,8 @@ void NegotiatedRouter::restore_rrr_checkpoint(const std::string& reason) {
     // Rebuild rather than applying inverse deltas to a ledger whose consistency
     // just failed. This recovery-only scan is never part of ordinary group work.
     std::fill(demand_.begin(),demand_.end(),0);usage_.clear();cell_nets_.clear();edge_nets_.clear();
-    official_wirelength_=0;official_reference_=0;official_squared_overflow_=0;
-    official_overflow_=0;official_zero_capacity_cells_=0;
-    for(size_t node=0;node<graph_.size();++node) {
-        const auto fixed=graph_.official_obstacle_demand(int(node));if(!fixed) continue;
-        const double capacity=graph_.official_capacity(int(node));
-        if(capacity<0 || !std::isfinite(capacity) || capacity>std::numeric_limits<int>::max())
-            throw std::logic_error("invalid capacity while restoring RRR checkpoint");
-        const auto excess=std::max(0LL,static_cast<long long>(fixed)-static_cast<long long>(capacity));
-        official_overflow_+=uint64_t(excess);
-        if(capacity<=0) {official_squared_overflow_+=10000; ++official_zero_capacity_cells_;}
-        else {const long double ratio=.1L*excess/capacity;official_squared_overflow_+=ratio*ratio;}
-    }
+    // Same fixed-demand cell contract and congestion scale as construction.
+    reset_official_fixed_ledger();
     for(size_t i=0;i<routes_.size();++i) {
         routes_[i].measured=measure_official_net_guides(def_.nets()[i],routes_[i].guides,graph_,lef_,
             options_.official_metrics,reference_lengths_.at(i));
