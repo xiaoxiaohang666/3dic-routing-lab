@@ -1,0 +1,662 @@
+#include "router/negotiated_router.hpp"
+#include <numeric>
+
+namespace eda {
+// Fixed TSVs make T invariant. Reconstruct complete W/C from the transactional
+// exact Guide ledger without scanning the graph or measuring other nets.
+CompleteMetrics NegotiatedRouter::recovery_metrics(const CompleteMetrics& invariant) const {
+    auto m=invariant;
+    m.guide.wirelength=double(official_wirelength_);
+    m.guide.reference=double(official_reference_);
+    m.guide.normalized=m.guide.reference>0?m.guide.wirelength/m.guide.reference:100;
+    m.guide.overflow=int(official_overflow_);
+    m.official.squared_normalized_overflow=double(std::max(0.0L,official_squared_overflow_));
+    m.official.zero_capacity_cells=official_zero_capacity_cells_;
+    m.official.wirelength_score=official_wirelength_score(m.guide.wirelength,m.guide.reference,options_.official_metrics);
+    m.official.congestion_score=100/std::sqrt(1+m.official.squared_normalized_overflow);
+    m.guide.quality=(.45*m.official.wirelength_score+.30*m.official.congestion_score+.25*m.official.thermal_score)/100;
+    m.official.guide=m.guide;
+    return m;
+}
+
+std::vector<size_t> NegotiatedRouter::recovery_selection() const {
+    if(options_.recovery_global_wirelength) {
+        // W is a function of aggregate L/R, not a sum of per-net scores. A
+        // net below its own reference can still improve aggregate W. TSV
+        // charge is invariant in this phase; removing all of its planar/via
+        // charge gives an optimistic savings bound (not a feasible proposal).
+        struct Entry {size_t index;double gain,removable;};
+        std::vector<Entry> ranked;ranked.reserve(routes_.size());
+        const double length=double(official_wirelength_),reference=double(full_reference_);
+        const double current_w=reference>0?official_wirelength_score(length,reference,options_.official_metrics):0;
+        for(size_t i=0;i<routes_.size();++i) {
+            const auto& m=routes_[i].measured;
+            if(m.wirelength<=0) continue;
+            const double removable=std::max(0.0,m.wirelength-m.tsv_wirelength);
+            const double gain=reference>0 && length>reference ?
+                .45*(official_wirelength_score(std::max(reference,length-removable),reference,
+                    options_.official_metrics)-current_w):0;
+            ranked.push_back({i,gain,removable});
+        }
+        const auto count=std::min(ranked.size(),options_.large_recovery_nets);
+        std::partial_sort(ranked.begin(),ranked.begin()+count,ranked.end(),[&](const Entry& a,const Entry& b) {
+            if(a.gain!=b.gain) return a.gain>b.gain;
+            if(a.removable!=b.removable) return a.removable>b.removable;
+            return def_.nets()[a.index].name<def_.nets()[b.index].name;
+        });
+        std::vector<size_t> result;result.reserve(count);
+        for(size_t k=0;k<count;++k) result.push_back(ranked[k].index);
+        // Zero-reference nets compete normally: no per-net division or special
+        // quota is needed. The total attempt budget and full-S gate still apply.
+        return result;
+    }
+    std::vector<size_t> positive,zero;
+    for(size_t i=0;i<routes_.size();++i) {
+        const auto& m=routes_[i].measured;
+        if(m.reference>0) {if(m.wirelength>m.reference) positive.push_back(i);}
+        else if(m.wirelength>0) zero.push_back(i);
+    }
+    auto rank=[&](size_t a,size_t b) {
+        if(options_.v8_recovery && pre_tsv_lengths_.size()==routes_.size()) {
+            const double da=std::max(0.0,routes_[a].measured.wirelength-pre_tsv_lengths_[a]);
+            const double db=std::max(0.0,routes_[b].measured.wirelength-pre_tsv_lengths_[b]);
+            if(da!=db) return da>db;
+        }
+        const double x=std::max(0.0,routes_[a].measured.wirelength-routes_[a].measured.reference);
+        const double y=std::max(0.0,routes_[b].measured.wirelength-routes_[b].measured.reference);
+        return x!=y?x>y:def_.nets()[a].name<def_.nets()[b].name;
+    };
+    std::sort(positive.begin(),positive.end(),rank);std::sort(zero.begin(),zero.end(),rank);
+    // Zero-reference nets have no meaningful ratio: a small separate tail
+    // budget prevents them from displacing the entire excess-length shortlist.
+    const size_t z=std::min({zero.size(),size_t(32),std::max(size_t(1),options_.large_recovery_nets/16)});
+    positive.resize(std::min(positive.size(),options_.large_recovery_nets-z));
+    const size_t take=std::min(z,options_.large_recovery_nets-positive.size());
+    positive.insert(positive.end(),zero.begin(),zero.begin()+take);return positive;
+}
+
+bool NegotiatedRouter::recovery_transaction(size_t index,
+        const std::function<std::optional<NetRoute>(const NetRoute&,const CompleteMetrics&)>& propose) {
+    const auto old=routes_.at(index);const auto before=recovery_metrics(best_metrics_);
+    account(index,old,-1);routes_[index]=NetRoute{};
+    bool installed=false;
+    auto restore=[&] {
+        if(installed) account(index,routes_[index],-1);
+        routes_[index]=old;account(index,old,1);best_metrics_=before;
+        ++recovery_stats_.rejected;
+    };
+    try {
+        const auto base=official_candidate_base();auto proposed=propose(old,base);
+        if(!proposed) {restore();return false;}
+        auto trial=std::move(*proposed);
+        std::string error;
+        if(trial.slot!=old.slot || !policy_.validate_mapping(def_.nets()[index],trial.guides,trial.slot,error))
+            throw std::runtime_error("budgeted recovery changed TSV mapping: "+error);
+        if(!validate_route(index,trial.guides,error))
+            throw std::runtime_error("budgeted recovery invalid net: "+error);
+        // The serialized rectangles, not the search proxy or caller's cached
+        // metrics, are the acceptance authority.
+        trial.measured=measure_official_net_guides(def_.nets()[index],trial.guides,graph_,lef_,
+            options_.official_metrics,reference_lengths_[index]);
+        if(trial.measured.tsv_cells!=old.measured.tsv_cells || trial.measured.tsv_points.size()!=old.measured.tsv_points.size())
+            throw std::runtime_error("budgeted recovery changed selected TSV");
+        for(size_t k=0;k<trial.measured.tsv_points.size();++k)
+            if(trial.measured.tsv_points[k].distance_to(old.measured.tsv_points[k])!=0)
+                throw std::runtime_error("budgeted recovery changed selected TSV point");
+        for(int n:trial.nodes) if(!graph_.legal_node(n)) throw std::runtime_error("budgeted recovery illegal node");
+        for(auto e:trial.edges) {auto [a,b]=edge_nodes(e);
+            if(!trial.nodes.count(a)||!trial.nodes.count(b)||!graph_.legal_edge(a,b))
+                throw std::runtime_error("budgeted recovery illegal edge");
+        }
+        if(trial.measured.wirelength>=old.measured.wirelength ||
+           !(official_candidate_key(trial,base)<official_candidate_key(old,base))) {restore();return false;}
+        routes_[index]=std::move(trial);account(index,routes_[index],1);installed=true;
+        auto after=recovery_metrics(before);
+        if((options_.unified_budget&&timed_out()) || after.official.zero_capacity_cells>before.official.zero_capacity_cells ||
+           after.guide.quality<=before.guide.quality+1e-12) {restore();return false;}
+        after.physical_length+=routes_[index].length-old.length;
+        after.vias=after.vias-old.vias+routes_[index].vias;
+        best_metrics_=after;++recovery_stats_.accepted;
+        if(routes_[index].recovery_subtree) ++counters_.v9_subtree_accepted;
+        if(routes_[index].recovery_layer) ++counters_.v6_layer_accepted;
+        return true;
+    } catch(const std::exception& e) {
+        ++recovery_stats_.candidate_failures;++rejection_reasons_[e.what()];restore();return false;
+    }
+}
+
+bool NegotiatedRouter::recovery_checkpoint(std::vector<std::pair<size_t,NetRoute>>& journal,CompleteMetrics& checkpoint) {
+    try {
+        std::set<size_t> changed;
+        for(const auto& [index,old]:journal) {
+            (void)old;
+            if(!changed.insert(index).second) continue;
+            const auto& r=routes_[index];
+            const auto actual=measure_official_net_guides(def_.nets()[index],r.guides,graph_,lef_,
+                options_.official_metrics,reference_lengths_[index]);
+            if(actual.wirelength!=r.measured.wirelength || actual.reference!=r.measured.reference ||
+               actual.demand!=r.measured.demand || actual.tsv_cells!=r.measured.tsv_cells ||
+               actual.tsv_points.size()!=r.measured.tsv_points.size())
+                throw std::runtime_error("budgeted recovery Guide/cache checkpoint mismatch");
+            for(size_t k=0;k<actual.tsv_points.size();++k)
+                if(actual.tsv_points[k].distance_to(r.measured.tsv_points[k])!=0)
+                    throw std::runtime_error("budgeted recovery selected TSV/cache checkpoint mismatch");
+        }
+        // Do not reuse a generation proof when testing the checkpoint: this
+        // also checks geometry and all reverse ownership after the batch.
+        complete_validation_cached_=false;validate_complete();
+        const auto predicted=recovery_metrics(best_metrics_);const auto full=measure();
+        auto same=[](double a,double b) {return std::isfinite(a)&&std::isfinite(b)&&
+            std::abs(a-b)<=2e-10*std::max({1.0,std::abs(a),std::abs(b)});};
+        if(!same(predicted.guide.wirelength,full.guide.wirelength)||!same(predicted.guide.reference,full.guide.reference)||
+           !same(predicted.guide.quality,full.guide.quality)||
+           !same(predicted.official.squared_normalized_overflow,full.official.squared_normalized_overflow)||
+           predicted.guide.overflow!=full.guide.overflow ||
+           predicted.official.zero_capacity_cells!=full.official.zero_capacity_cells ||
+           full.guide.quality+1e-12<checkpoint.guide.quality || full.guide.wirelength>checkpoint.guide.wirelength ||
+           full.official.zero_capacity_cells>checkpoint.official.zero_capacity_cells ||
+           !same(full.official.thermal_score,checkpoint.official.thermal_score))
+            throw std::runtime_error("budgeted recovery exact checkpoint score mismatch/regression");
+        best_metrics_=checkpoint=full;journal.clear();++recovery_stats_.checkpoints;return true;
+    } catch(const std::exception& e) {
+        ++rejection_reasons_[std::string("budgeted recovery checkpoint: ")+e.what()];
+        const size_t undone=journal.size();
+        for(auto it=journal.rbegin();it!=journal.rend();++it) {
+            const size_t i=it->first;
+            if(routes_[i].recovery_subtree && counters_.v9_subtree_accepted) --counters_.v9_subtree_accepted;
+            if(routes_[i].recovery_layer && counters_.v6_layer_accepted) --counters_.v6_layer_accepted;
+            account(i,routes_[i],-1);routes_[i]=std::move(it->second);account(i,routes_[i],1);
+        }
+        journal.clear();recovery_stats_.accepted-=std::min(recovery_stats_.accepted,undone);
+        ++recovery_stats_.checkpoint_rollbacks;
+        // Restore the validated aggregate as well as route/demand/ownership
+        // transactions. A detected score-cache drift must not survive rollback.
+        official_wirelength_=checkpoint.guide.wirelength;official_reference_=checkpoint.guide.reference;
+        official_squared_overflow_=checkpoint.official.squared_normalized_overflow;
+        official_overflow_=checkpoint.guide.overflow;official_zero_capacity_cells_=checkpoint.official.zero_capacity_cells;
+        ++state_generation_;complete_validation_cached_=false;validate_complete();best_metrics_=measure();
+        if(std::abs(best_metrics_.guide.quality-checkpoint.guide.quality)>2e-10 ||
+           best_metrics_.guide.wirelength!=checkpoint.guide.wirelength ||
+           best_metrics_.guide.reference!=checkpoint.guide.reference ||
+           best_metrics_.official.zero_capacity_cells!=checkpoint.official.zero_capacity_cells)
+            throw std::runtime_error("budgeted recovery checkpoint rollback did not restore validated score");
+        checkpoint=best_metrics_;
+        return false;
+    }
+}
+
+std::vector<std::pair<int,int>> NegotiatedRouter::recovery_seeds(size_t index,const NetRoute& old) const {
+    std::vector<std::pair<int,int>> result;
+    std::map<int,int> degree;for(auto e:old.edges) {auto [a,b]=edge_nodes(e);++degree[a];++degree[b];}
+    for(int side=0;side<2;++side) {
+        std::vector<int> cols,rows,layers;
+        for(const auto& p:def_.nets()[index].pins) if((p.layer_idx>10)==bool(side)) {
+            cols.push_back(graph_.grid().get_col(p.coord.x));rows.push_back(graph_.grid().get_row(p.coord.y));
+            layers.push_back(std::clamp(p.layer_idx,side?11:1,side?20:(old.slot>=0?9:10)));
+        }
+        if(old.slot>=0 && !cols.empty()) {
+            const auto p=policy_.slots()[old.slot].point;cols.push_back(graph_.grid().get_col(p.x));
+            rows.push_back(graph_.grid().get_row(p.y));layers.push_back(side?11:9);
+        }
+        if(cols.size()<3||cols.size()>16) continue;
+        std::sort(cols.begin(),cols.end());std::sort(rows.begin(),rows.end());std::sort(layers.begin(),layers.end());
+        const int c=cols[cols.size()/2],r=rows[rows.size()/2],l=layers[layers.size()/2];
+        std::vector<int> candidates{graph_.node(c,r,l)};
+        // Existing junctions preserve useful trunk locations. Bound the list
+        // before Hanan probes; use coordinates rather than all grid cells.
+        std::vector<std::pair<int,int>> junctions;
+        for(auto [n,d]:degree) if(d>=3 && (graph_.layer(n)>10)==bool(side))
+            junctions.emplace_back(std::abs(graph_.col(n)-c)+std::abs(graph_.row(n)-r),n);
+        std::sort(junctions.begin(),junctions.end());
+        for(size_t k=0;k<std::min(size_t(2),junctions.size());++k) candidates.push_back(junctions[k].second);
+        for(auto [x,y]:std::vector<std::pair<int,int>>{{cols.front(),r},{cols.back(),r},{c,rows.front()},{c,rows.back()}})
+            candidates.push_back(graph_.node(x,y,l));
+        if(options_.v8_recovery) {
+            const int low=side?11:1,high=side?20:(old.slot>=0?9:10);
+            std::vector<int> layers,shifted;
+            for(int dl:{-1,1,-2,2}) if(l+dl>=low&&l+dl<=high) layers.push_back(graph_.node(c,r,l+dl));
+            for(auto [dc,dr]:std::array<std::pair<int,int>,4>{{{-1,0},{1,0},{0,-1},{0,1}}})
+                if(c+dc>=0&&c+dc<graph_.grid().cols&&r+dr>=0&&r+dr<graph_.grid().rows)
+                    shifted.push_back(graph_.node(c+dc,r+dr,l));
+            // Each side gets four probes under the default two-die budget:
+            // median, an existing/Hanan trunk, a shifted trunk, and a layer.
+            std::vector<int> interleaved{candidates.front()};
+            for(size_t k=0;k<std::max({candidates.size()-1,shifted.size(),layers.size()});++k) {
+                if(k+1<candidates.size()) interleaved.push_back(candidates[k+1]);
+                if(k<shifted.size()) interleaved.push_back(shifted[k]);
+                if(k<layers.size()) interleaved.push_back(layers[k]);
+            }
+            candidates=std::move(interleaved);
+        }
+        std::set<int> unique;
+        for(int n:candidates) if(graph_.legal_node(n)&&unique.insert(n).second) result.emplace_back(side,n);
+    }
+    // Round-robin sides so one die cannot consume the entire branch budget.
+    std::array<std::vector<std::pair<int,int>>,2> sides;
+    for(auto item:result) sides[item.first].push_back(item);
+    result.clear();
+    for(size_t k=0;k<std::max(sides[0].size(),sides[1].size());++k)
+        for(int side=0;side<2;++side) if(k<sides[side].size()) result.push_back(sides[side][k]);
+    if(result.size()>size_t(options_.large_recovery_branches)) result.resize(size_t(options_.large_recovery_branches));
+    return result;
+}
+
+std::vector<NetRoute> NegotiatedRouter::recovery_local_candidates(size_t index,const NetRoute& old) {
+    std::vector<NetRoute> result;if(old.explicit_geometry) return result;
+    std::map<int,std::vector<int>> adjacency;
+    for(auto e:old.edges) {auto [a,b]=edge_nodes(e);adjacency[a].push_back(b);adjacency[b].push_back(a);}
+    std::set<int> terminals;for(const auto& a:old.accesses) terminals.insert(a.node);
+    std::vector<std::vector<int>> branches;
+    for(int terminal:terminals) if(adjacency[terminal].size()==1) {
+        std::vector<int> branch{terminal};int previous=-1,n=terminal;
+        do {int next=adjacency[n][0];if(next==previous) next=adjacency[n][1];
+            branch.push_back(next);previous=n;n=next;
+        } while(adjacency[n].size()==2&&!terminals.count(n));
+        if(branch.size()>2) branches.push_back(std::move(branch));
+    }
+    std::stable_sort(branches.begin(),branches.end(),[](const auto& a,const auto& b){return a.size()>b.size();});
+    if(branches.size()>4) branches.resize(4);
+    for(const auto& branch:branches) {
+        if(timed_out()) break;
+        auto trial=old;trial.recovery_subtree=false;trial.recovery_layer=false;trial.guides.clear();
+        for(size_t k=0;k+1<branch.size();++k) {trial.edges.erase(route_edge(branch[k],branch[k+1]));trial.nodes.erase(branch[k]);}
+        const int side=graph_.layer(branch.front())>10;
+        std::set<int> tree;for(int n:trial.nodes) if((graph_.layer(n)>10)==bool(side)) tree.insert(n);
+        PinAccess a;a.node=branch.front();auto path=search({a},tree,trial,side?11:1,side?20:(old.slot>=0?9:10),options_.dijkstra);
+        if(path.status!=PathResult::Status::FOUND) continue;
+        for(size_t k=0;k<path.nodes.size();++k) {trial.nodes.insert(path.nodes[k]);if(k) trial.edges.insert(route_edge(path.nodes[k-1],path.nodes[k]));}
+        encode(index,trial);result.push_back(std::move(trial));
+    }
+    return result;
+}
+
+std::vector<NetRoute> NegotiatedRouter::recovery_subtree_candidates(size_t index,const NetRoute& old) {
+    std::vector<NetRoute> result;
+    if(!options_.v9_subtree_recovery || old.explicit_geometry || old.edges.empty() || old.edges.size()>1024 || old.nodes.size()>2048 || timed_out()) return result;
+    // A compressed chain has no terminal in its interior. Removing it retains
+    // every real access and the fixed TSV, unlike replacing the entire net.
+    std::map<int,std::vector<int>> adjacency;
+    for(auto edge:old.edges) {
+        const auto [a,b]=edge_nodes(edge);
+        if(!graph_.legal_edge(a,b)) return result;
+        adjacency[a].push_back(b);adjacency[b].push_back(a);
+    }
+    std::set<int> terminals;
+    for(const auto& access:old.accesses) if(old.nodes.count(access.node)) terminals.insert(access.node);
+    if(old.slot>=0) {
+        const auto& slot=policy_.slots().at(size_t(old.slot));
+        const int lower=graph_.node(graph_.col(slot.lower_node),graph_.row(slot.lower_node),9);
+        for(int node:{lower,slot.lower_node,slot.upper_node}) if(old.nodes.count(node)) terminals.insert(node);
+    }
+    if(terminals.size()<4) return result;
+    struct Chain {std::vector<int> nodes;double priority{};};
+    std::vector<Chain> chains;std::set<EdgeKey> consumed;
+    size_t examined=0;
+    for(const auto& [start,neighbors]:adjacency) {
+        if((++examined&127U)==0 && timed_out()) return result;
+        if(neighbors.size()==2 && !terminals.count(start)) continue;
+        for(int next:neighbors) {
+            if(consumed.count(route_edge(start,next))) continue;
+            Chain chain;chain.nodes.push_back(start);
+            int previous=start,current=next;bool closed=false;
+            while(true) {
+                if((++examined&127U)==0 && timed_out()) return result;
+                const auto edge=route_edge(previous,current);
+                if(!consumed.insert(edge).second) {closed=true;break;}
+                chain.nodes.push_back(current);
+                const auto& adjacent=adjacency.at(current);
+                if(current==start) {closed=true;break;}
+                if(adjacent.size()!=2 || terminals.count(current)) break;
+                const int following=adjacent.front()==previous?adjacent.back():adjacent.front();
+                previous=current;current=following;
+            }
+            if(closed || chain.nodes.size()<3) continue;
+            const int first=chain.nodes.front(),last=chain.nodes.back();
+            if((graph_.layer(first)>10)!=(graph_.layer(last)>10)) continue;
+            // This is a ranking proxy only. Final emitted GCells and rectangle
+            // via charges decide acceptance, including shared-tree overlap.
+            double cost=0;
+            for(size_t k=1;k<chain.nodes.size();++k) {
+                const int a=chain.nodes[k-1],b=chain.nodes[k];
+                if(graph_.layer(a)!=graph_.layer(b))
+                    cost+=options_.official_metrics.via_cost_ratio*std::max(options_.official_metrics.gcell_width_dbu,options_.official_metrics.gcell_height_dbu);
+                cost+=lef_.get_layer_direction(get_layer_name(graph_.layer(b)))==Direction::HORIZONTAL?
+                    options_.official_metrics.gcell_width_dbu:options_.official_metrics.gcell_height_dbu;
+            }
+            const auto a=graph_.point(first),b=graph_.point(last);
+            chain.priority=cost-std::abs(a.x-b.x)-std::abs(a.y-b.y);
+            chains.push_back(std::move(chain));
+        }
+    }
+    std::stable_sort(chains.begin(),chains.end(),[](const auto& a,const auto& b) {
+        return a.priority!=b.priority?a.priority>b.priority:a.nodes<b.nodes;
+    });
+    const size_t branch_limit=std::clamp<size_t>(options_.v9_subtree_branches,1,16);
+    const size_t boundary_limit=std::clamp<size_t>(options_.v9_subtree_boundary,2,64);
+    size_t attempted=0;
+    for(const auto& chain:chains) {
+        if(timed_out() || attempted>=branch_limit) break;
+        const int first=chain.nodes.front(),last=chain.nodes.back(),side=graph_.layer(first)>10;
+        std::set<EdgeKey> cut;
+        for(size_t k=1;k<chain.nodes.size();++k) cut.insert(route_edge(chain.nodes[k-1],chain.nodes[k]));
+        auto component=[&](int seed) {
+            std::set<int> reached{seed};std::vector<int> pending{seed};size_t work=0;
+            while(!pending.empty()) {
+                if((++work&127U)==0 && timed_out()) return std::set<int>{};
+                const int node=pending.back();pending.pop_back();
+                const auto found=adjacency.find(node);if(found==adjacency.end()) continue;
+                for(int next:found->second) if(!cut.count(route_edge(node,next)) && reached.insert(next).second)
+                    pending.push_back(next);
+            }
+            return reached;
+        };
+        const auto left=component(first);
+        if(left.empty() || left.count(last)) continue; // A cycle is not a removable tree bridge.
+        const auto right=component(last);if(right.empty()) continue;
+        size_t left_pins=0,right_pins=0,side_nodes=0;
+        for(int node:terminals) {left_pins+=left.count(node);right_pins+=right.count(node);}
+        // Both sides retain genuine subtrees; leaf-terminal reconnection stays
+        // in the older local recovery operator. High total fanout is allowed.
+        if(left_pins<2 || right_pins<2) continue;
+        for(int node:old.nodes) if((graph_.layer(node)>10)==bool(side)) ++side_nodes;
+        if(left.size()+right.size()+chain.nodes.size()-2!=side_nodes) continue;
+        auto boundary=[&](const std::set<int>& tree,const std::set<int>& other,int endpoint) {
+            int min_col=graph_.grid().cols,max_col=-1,min_row=graph_.grid().rows,max_row=-1;
+            std::set<int> layers;
+            for(int node:other) {min_col=std::min(min_col,graph_.col(node));max_col=std::max(max_col,graph_.col(node));
+                min_row=std::min(min_row,graph_.row(node));max_row=std::max(max_row,graph_.row(node));layers.insert(graph_.layer(node));}
+            auto distance=[&](int node) {
+                const int c=graph_.col(node),r=graph_.row(node),l=graph_.layer(node);
+                int dl=20;for(int layer:layers) dl=std::min(dl,std::abs(l-layer));
+                return (std::max(0,min_col-c)+std::max(0,c-max_col))*options_.official_metrics.gcell_width_dbu+
+                    (std::max(0,min_row-r)+std::max(0,r-max_row))*options_.official_metrics.gcell_height_dbu+
+                    dl*options_.official_metrics.via_cost_ratio*std::max(options_.official_metrics.gcell_width_dbu,options_.official_metrics.gcell_height_dbu);
+            };
+            std::vector<int> nodes(tree.begin(),tree.end());
+            std::stable_sort(nodes.begin(),nodes.end(),[&](int a,int b) {
+                const double da=distance(a),db=distance(b);return da!=db?da<db:a<b;
+            });
+            if(nodes.size()>boundary_limit) nodes.resize(boundary_limit);
+            if(std::find(nodes.begin(),nodes.end(),endpoint)==nodes.end()) nodes.back()=endpoint;
+            return nodes;
+        };
+        auto left_boundary=boundary(left,right,first),right_boundary=boundary(right,left,last);
+        if(timed_out()) break;
+        ++attempted;
+        auto trial=old;trial.recovery_subtree=true;trial.recovery_layer=false;trial.guides.clear();
+        for(auto edge:cut) trial.edges.erase(edge);
+        for(size_t k=1;k+1<chain.nodes.size();++k) trial.nodes.erase(chain.nodes[k]);
+        // Bound each optional search independently without extending the phase
+        // deadline. Restore every temporary option even after encode throws.
+        const auto saved_deadline=deadline_;const auto saved_limit=options_.search_limit;
+        const bool saved_trial=v5_topology_trial_;
+        struct Restore {std::function<void()> action;~Restore(){action();}} restore{[&] {
+            deadline_=saved_deadline;options_.search_limit=saved_limit;v5_topology_trial_=saved_trial;
+        }};
+        deadline_=std::min(saved_deadline,std::chrono::steady_clock::now()+std::chrono::milliseconds(50));
+        options_.search_limit=std::min<size_t>(saved_limit,20000);v5_topology_trial_=true;
+        try {
+            std::vector<PinAccess> sources;for(int node:left_boundary) {PinAccess access;access.node=node;sources.push_back(access);}
+            std::set<int> targets(right_boundary.begin(),right_boundary.end());
+            ++counters_.v9_subtree_searches;
+            const auto path=search(sources,targets,trial,side?11:1,side?20:(old.slot>=0?9:10),options_.dijkstra);
+            if(path.status!=PathResult::Status::FOUND || timed_out()) continue;
+            // A path may use free existing tree edges. Keep only its last exit
+            // from the left subtree through its first arrival at the right,
+            // so the new bridge cannot introduce a cycle in either subtree.
+            size_t arrival=path.nodes.size(),departure=0;
+            for(size_t k=0;k<path.nodes.size();++k) if(right.count(path.nodes[k])) {arrival=k;break;}
+            if(arrival==path.nodes.size()) continue;
+            for(size_t k=0;k<arrival;++k) if(left.count(path.nodes[k])) departure=k;
+            if(!left.count(path.nodes[departure]) || departure>=arrival) continue;
+            bool legal=true;std::set<int> bridge_nodes;
+            for(size_t k=departure;k<=arrival;++k) {
+                if(!bridge_nodes.insert(path.nodes[k]).second) {legal=false;break;}
+                trial.nodes.insert(path.nodes[k]);
+                if(k>departure) {
+                    if(!graph_.legal_edge(path.nodes[k-1],path.nodes[k])) {legal=false;break;}
+                    trial.edges.insert(route_edge(path.nodes[k-1],path.nodes[k]));
+                }
+            }
+            if(!legal) continue;
+            encode(index,trial);
+            if(trial.slot!=old.slot || trial.measured.tsv_cells!=old.measured.tsv_cells ||
+               trial.measured.tsv_points.size()!=old.measured.tsv_points.size()) continue;
+            bool same=true;for(size_t k=0;k<trial.measured.tsv_points.size();++k)
+                same=same&&trial.measured.tsv_points[k].distance_to(old.measured.tsv_points[k])==0;
+            if(!same) continue;
+            ++counters_.v9_subtree_candidates;result.push_back(std::move(trial));
+        } catch(const std::exception& error) {
+            ++recovery_stats_.candidate_failures;
+            ++rejection_reasons_[std::string("subtree recovery: ")+error.what()];
+        }
+    }
+    return result;
+}
+
+std::vector<NetRoute> NegotiatedRouter::recovery_layer_candidates(size_t index,const NetRoute& old) {
+    std::vector<NetRoute> result;
+    if(!options_.joint_layer_recovery || !options_.official_metrics.score_20261020 ||
+       old.explicit_geometry || old.edges.empty() || old.edges.size()>1024 || old.nodes.size()>2048 || timed_out()) return result;
+    // Project one bounded tree onto its XY skeleton. Horizontal and vertical
+    // branches choose layers jointly; all branches meeting at one XY location
+    // share the union of the required vertical ladder. Real access geometry and
+    // the opposite die are retained. This is a candidate operator, not a claim
+    // of optimal layer assignment: emitted Guides decide W, via and cell usage.
+    struct Assignment {NetRoute route;double rank{};};
+    for(int side=0;side<2 && !timed_out();++side) {
+        const int low=side?11:1,high=side?20:(old.slot>=0?9:10);
+        const auto on_side=[&](int node){return (graph_.layer(node)>10)==bool(side);};
+        const auto xy=[&](int node){return graph_.row(node)*graph_.grid().cols+graph_.col(node);};
+        std::set<EdgeKey> skeleton;
+        std::set<int> projected;
+        bool valid=true;
+        for(auto edge:old.edges) {
+            const auto [a,b]=edge_nodes(edge);
+            if(!on_side(a) || !on_side(b)) continue;
+            if(!graph_.legal_edge(a,b)) {valid=false;break;}
+            if(graph_.layer(a)==graph_.layer(b)) {
+                skeleton.insert(route_edge(xy(a),xy(b)));
+                projected.insert(xy(a));projected.insert(xy(b));
+            }
+            if(skeleton.size()>128 || projected.size()>128) {valid=false;break;}
+        }
+        if(!valid || skeleton.empty()) continue;
+        std::map<int,std::set<int>> anchors;
+        size_t terminal_count=0;
+        for(const auto& access:old.accesses) if(on_side(access.node)) {
+            if(graph_.layer(access.node)<low || graph_.layer(access.node)>high || !projected.count(xy(access.node))) {
+                valid=false;break;
+            }
+            anchors[xy(access.node)].insert(graph_.layer(access.node));++terminal_count;
+        }
+        // planned TSV access is normally present in accesses; retaining this
+        // explicit boundary also protects library callers supplying graph trees.
+        if(old.slot>=0) {
+            const auto& slot=policy_.slots().at(size_t(old.slot));
+            const int node=side?slot.upper_node:graph_.node(graph_.col(slot.lower_node),graph_.row(slot.lower_node),9);
+            if(!projected.count(xy(node))) valid=false;
+            else anchors[xy(node)].insert(graph_.layer(node));
+        }
+        if(!valid || terminal_count>16) continue;
+        std::vector<int> horizontal,vertical;
+        for(int layer=low;layer<=high;++layer) {
+            const auto direction=lef_.get_layer_direction(get_layer_name(layer));
+            if(direction==Direction::HORIZONTAL) horizontal.push_back(layer);
+            if(direction==Direction::VERTICAL) vertical.push_back(layer);
+        }
+        // A one-direction tree needs no artificial turn layer.
+        bool has_horizontal=false,has_vertical=false;
+        for(auto edge:skeleton) {const auto [a,b]=edge_nodes(edge);
+            has_horizontal|=a/graph_.grid().cols==b/graph_.grid().cols;
+            has_vertical|=a%graph_.grid().cols==b%graph_.grid().cols;
+        }
+        if(!has_horizontal) horizontal={low};
+        if(!has_vertical) vertical={low};
+        std::vector<Assignment> choices;
+        for(int h:horizontal) for(int v:vertical) {
+            if(timed_out()) break;
+            auto trial=old;trial.recovery_subtree=false;trial.recovery_layer=true;trial.guides.clear();
+            for(auto it=trial.edges.begin();it!=trial.edges.end();) {
+                const auto [a,b]=edge_nodes(*it);
+                if(on_side(a)&&on_side(b)) it=trial.edges.erase(it);else ++it;
+            }
+            for(auto it=trial.nodes.begin();it!=trial.nodes.end();)
+                if(on_side(*it)) it=trial.nodes.erase(it);else ++it;
+            auto incident=anchors;
+            bool legal=true;
+            for(auto edge:skeleton) {
+                const auto [a,b]=edge_nodes(edge);
+                const bool along_x=a/graph_.grid().cols==b/graph_.grid().cols;
+                const int layer=along_x?h:v;
+                const int na=graph_.node(a%graph_.grid().cols,a/graph_.grid().cols,layer);
+                const int nb=graph_.node(b%graph_.grid().cols,b/graph_.grid().cols,layer);
+                if(!graph_.legal_edge(na,nb)) {legal=false;break;}
+                trial.nodes.insert(na);trial.nodes.insert(nb);trial.edges.insert(route_edge(na,nb));
+                incident[a].insert(layer);incident[b].insert(layer);
+            }
+            if(!legal) continue;
+            for(const auto& [cell,layers]:incident) {
+                if(layers.empty()) continue;
+                const int first=*layers.begin(),last=*layers.rbegin();
+                for(int layer=first;layer<=last;++layer) {
+                    const int node=graph_.node(cell%graph_.grid().cols,cell/graph_.grid().cols,layer);
+                    if(!graph_.legal_node(node)) {legal=false;break;}
+                    trial.nodes.insert(node);
+                    if(layer>first) {
+                        const int previous=graph_.node(cell%graph_.grid().cols,cell/graph_.grid().cols,layer-1);
+                        if(!graph_.legal_edge(previous,node)) {legal=false;break;}
+                        trial.edges.insert(route_edge(previous,node));
+                    }
+                }
+                if(!legal) break;
+            }
+            if(!legal || (trial.nodes==old.nodes && trial.edges==old.edges)) continue;
+            double rank=0;
+            const double step=std::max(options_.official_metrics.gcell_width_dbu,options_.official_metrics.gcell_height_dbu);
+            for(auto edge:trial.edges) {const auto [a,b]=edge_nodes(edge);
+                if(on_side(a)&&on_side(b)) rank+=graph_.layer(a)!=graph_.layer(b)?options_.official_metrics.via_cost_ratio*step:graph_.edge_length(a,b);
+            }
+            for(int node:trial.nodes) if(on_side(node)&&!pin_exempt(index,node))
+                rank+=std::min(1.0,present_)*official_cell_search_cost(node);
+            choices.push_back({std::move(trial),rank});
+        }
+        std::stable_sort(choices.begin(),choices.end(),[](const auto& a,const auto& b){return a.rank<b.rank;});
+        // Bound encoding/validation work. Both via and resource estimates rank
+        // this shortlist; no estimate can commit a production route.
+        size_t encoded=0;
+        for(auto& choice:choices) {
+            if(timed_out() || encoded>=6) break;
+            ++encoded;
+            try {
+                encode(index,choice.route);
+                if(choice.route.measured.tsv_cells!=old.measured.tsv_cells ||
+                   choice.route.measured.tsv_points.size()!=old.measured.tsv_points.size()) continue;
+                bool same=true;
+                for(size_t k=0;k<old.measured.tsv_points.size();++k)
+                    same=same&&choice.route.measured.tsv_points[k].distance_to(old.measured.tsv_points[k])==0;
+                if(!same) continue;
+                ++counters_.v6_layer_candidates;result.push_back(std::move(choice.route));
+            } catch(const std::exception& error) {
+                ++recovery_stats_.candidate_failures;
+                ++rejection_reasons_[std::string("joint layer recovery: ")+error.what()];
+            }
+        }
+    }
+    return result;
+}
+std::optional<NetRoute> NegotiatedRouter::recovery_candidates(size_t index,const NetRoute& old,const CompleteMetrics& base) {
+    NetRoute best=old;best.recovery_subtree=false;best.recovery_layer=false;auto key=official_candidate_key(best,base);
+    auto consider=[&](NetRoute trial,bool shared=false,bool local=false) {
+        ++recovery_stats_.candidates;recovery_stats_.shared_candidates+=shared;recovery_stats_.local_candidates+=local;
+        auto k=official_candidate_key(trial,base);
+        if(trial.measured.wirelength<old.measured.wirelength && k<key) {best=std::move(trial);key=k;}
+    };
+    std::array<int,2> count{};for(const auto& p:def_.nets()[index].pins) ++count[p.layer_idx>10];
+    if(old.slot>=0) for(auto& n:count) if(n) ++n;
+    const bool local_only=*std::max_element(count.begin(),count.end())>16;
+    const double current=present_;
+    if(options_.joint_layer_recovery) {
+        try {for(auto& trial:recovery_layer_candidates(index,old)) consider(std::move(trial),false,true);}
+        catch(const std::exception&) {++recovery_stats_.candidate_failures;}
+    }
+    if(options_.v9_subtree_recovery) {
+        // Real internal-tree candidates precede whole-net/leaf templates and
+        // are available even when the complete net exceeds the fanout cutoff.
+        present_=std::min(current,1.0);
+        try {for(auto& trial:recovery_subtree_candidates(index,old)) consider(std::move(trial),false,true);}
+        catch(const std::exception&) {++recovery_stats_.candidate_failures;}
+        present_=current;
+    }
+    for(double price:std::array<double,3>{{current,0.01/std::max(1.0,official_congestion_price()),0}}) {
+        if(timed_out()) break;
+        present_=price;
+        if(local_only) {
+            try {for(auto& trial:recovery_local_candidates(index,old)) consider(std::move(trial),false,true);}
+            catch(const std::exception&) {++recovery_stats_.candidate_failures;}
+        } else for(int order=0;order<2&&!timed_out();++order) {
+            try {consider(build_candidate(index,old.slot,order));} catch(const std::exception&) {++recovery_stats_.candidate_failures;}
+        }
+    }
+    // Connect every terminal to an explicitly seeded shared tree. TSV stays
+    // fixed and each opposite-die branch is copied without rebuilding it.
+    present_=0;
+    if(!local_only) for(auto [side,seed]:recovery_seeds(index,old)) for(int order=0;order<2;++order) {
+        if(timed_out()) break;
+        try {
+            std::array<int,2> seeds{{-1,-1}};seeds[side]=seed;
+            auto trial=build_tree(index,old.slot,order,seeds,side);
+            for(int n:old.nodes) if((graph_.layer(n)>10)!=bool(side)) trial.nodes.insert(n);
+            for(auto e:old.edges) if((graph_.layer(edge_nodes(e).first)>10)!=bool(side)) trial.edges.insert(e);
+            for(const auto& a:old.accesses) if((graph_.layer(a.node)>10)!=bool(side)) trial.accesses.push_back(a);
+            encode(index,trial);consider(std::move(trial),true);
+        } catch(const std::exception&) {++recovery_stats_.candidate_failures;}
+    }
+    present_=current;
+    if(best.measured.wirelength>=old.measured.wirelength) return std::nullopt;
+    return best;
+}
+
+void NegotiatedRouter::recover_budgeted_wirelength() {
+    if(!options_.official_model) throw std::runtime_error("budgeted recovery requires official model");
+    if(!options_.large_recovery_nets||options_.large_recovery_nets>4096||options_.large_recovery_rounds<1||
+       options_.large_recovery_rounds>2||options_.large_recovery_branches<0||options_.large_recovery_branches>8||
+       !std::isfinite(options_.large_recovery_seconds)||options_.large_recovery_seconds<=0||options_.large_recovery_seconds>3600)
+        throw std::runtime_error("invalid budgeted recovery budget");
+    const auto phase_start=std::chrono::steady_clock::now();
+    const auto previous_deadline=deadline_;const double previous_present=present_,previous_history=history_scale_;
+    const bool previous_cell=recovery_cell_cost_,previous_trial=v5_topology_trial_;
+    struct RestorePhase {std::function<void()> action;~RestorePhase(){action();}} restore{[&] {
+        deadline_=previous_deadline;present_=previous_present;history_scale_=previous_history;recovery_cell_cost_=previous_cell;v5_topology_trial_=previous_trial;
+    }};
+    const auto stage_deadline=phase_start+std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(options_.large_recovery_seconds));
+    deadline_=options_.unified_budget?std::min(previous_deadline,stage_deadline):stage_deadline;
+    if(options_.unified_budget) v5_topology_trial_=true;
+    history_scale_=0;recovery_cell_cost_=true;recovery_stats_={};
+    validate_complete();best_metrics_=measure();recovery_stats_.before=best_metrics_;
+    CompleteMetrics checkpoint=best_metrics_;std::vector<std::pair<size_t,NetRoute>> journal;
+    bool valid=true;
+    for(int pass=0;pass<options_.large_recovery_rounds&&valid&&!timed_out();++pass) {
+        const auto selected=recovery_selection();recovery_stats_.selected+=selected.size();
+        for(size_t index:selected) {
+            if(timed_out()) break;
+            ++recovery_stats_.attempted;recovery_stats_.zero_reference+=routes_[index].measured.reference==0;
+            const auto old=routes_[index];
+            if(recovery_transaction(index,[&](const auto& route,const auto& base){return recovery_candidates(index,route,base);})) {
+                journal.emplace_back(index,old);
+                if(journal.size()>=64) valid=recovery_checkpoint(journal,checkpoint);
+            }
+            if(recovery_stats_.attempted%128==0) std::cout<<"[BUDGETED_RECOVERY] nets="<<recovery_stats_.attempted
+                <<" accepted="<<recovery_stats_.accepted<<" L="<<best_metrics_.guide.wirelength
+                <<" S="<<100*best_metrics_.guide.quality<<std::endl;
+            if(!valid) break;
+        }
+    }
+    recovery_stats_.timed_out=timed_out();
+    if(valid) recovery_checkpoint(journal,checkpoint);
+    recovery_stats_.after=best_metrics_;
+    recovery_stats_.seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-phase_start).count();
+    std::cout<<"[BUDGETED_RECOVERY] final attempted="<<recovery_stats_.attempted<<" accepted="<<recovery_stats_.accepted
+        <<" candidates="<<recovery_stats_.candidates<<" seconds="<<recovery_stats_.seconds<<std::endl;
+}
+} // namespace eda

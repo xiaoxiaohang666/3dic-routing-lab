@@ -1,0 +1,27 @@
+# Local credentials and editor state
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+.vscode/
+.idea/
+__pycache__/
+*.py[cod]
+*.log
+.DS_Store
+Thumbs.db
+# Generated builds, results and private/third-party assets
+build/
+build-*/
+output/
+local/
+公开测试用例1011/
+references/
+dist/
+*.tar.gz
+*.zip
+# Selected historical text logs are intentional evidence.
+!research/evidence/**/*.log
+
+!docs/provenance/ctest.log
