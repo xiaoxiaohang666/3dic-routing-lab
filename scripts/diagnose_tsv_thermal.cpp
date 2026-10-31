@@ -62,7 +62,7 @@ std::vector<int> parse_list(const std::string& text) {
 }
 int main(int argc,char** argv) {
  try {
-    std::string def_file,thermal_file,guide_file,output,radii_text="2,4,8,16,32",stacks_text="2,4,8,16,32";
+    std::string def_file,thermal_file,guide_file,output,radii_text="2,4,8,16,32",stacks_text="2,4,8,16,32",hot_text="0,3";
     std::vector<std::string> lefs;double gain=0,length=0,reference=0,detour=2,live_q=-1;
     for(int i=1;i<argc;++i) {
         const std::string key=argv[i];
@@ -75,6 +75,7 @@ int main(int argc,char** argv) {
         else if(key=="--length") length=std::stod(value);else if(key=="--reference") reference=std::stod(value);
         else if(key=="--detour-factor") detour=std::stod(value);
         else if(key=="--q") live_q=std::stod(value);else if(key=="--stack-sizes") stacks_text=value;
+        else if(key=="--hot-radii") hot_text=value;
         else throw std::runtime_error("unknown option "+key);
     }
     if(def_file.empty()||lefs.empty()||thermal_file.empty()||guide_file.empty()||output.empty()||
@@ -306,7 +307,7 @@ int main(int argc,char** argv) {
         long double unique_q=0;for(const auto& item:cross) unique_q+=interface_q(item.cell,1);
         out<<",\n\"stacking\":{\"live_q\":"<<live_q<<",\"unique_tsv_interface_q\":"<<double(unique_q)<<",\"sweeps\":[";
         bool first_stack=true;
-        for(int stack:parse_list(stacks_text)) for(int hot_radius:{0,3}) {
+        for(int stack:parse_list(stacks_text)) for(int hot_radius:parse_list(hot_text)) {
             std::vector<int> stacked(cells,0);double added=0;long double stacked_q=0;size_t hubs=0;
             for(size_t begin=0;begin<k;begin+=size_t(stack)) {
                 const size_t end=std::min(k,begin+size_t(stack));
