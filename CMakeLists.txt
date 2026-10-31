@@ -62,6 +62,11 @@ add_executable(eda_diagnose_pin_floor scripts/diagnose_pin_floor.cpp)
 target_link_libraries(eda_diagnose_pin_floor PRIVATE eda_core)
 set_target_properties(eda_diagnose_pin_floor PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
+# Offline TSV thermal headroom estimate; never linked into the router.
+add_executable(eda_diagnose_tsv_thermal scripts/diagnose_tsv_thermal.cpp)
+target_link_libraries(eda_diagnose_tsv_thermal PRIVATE eda_core)
+set_target_properties(eda_diagnose_tsv_thermal PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
 include(CTest)
 if(BUILD_TESTING)
     add_executable(grid_local_tests tests/grid_local_tests.cpp)
