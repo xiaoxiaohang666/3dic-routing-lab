@@ -56,7 +56,7 @@ DEF + LEF + thermal JSON
 
 搜索代价用于产生候选。最终须按同一规则编码完整 Guide，计算真实 L、Q、rho、W/C/T/S，再执行组验收和检查点规则。导数价格、单网长度界和 TSV 落点代理不能代替完整验收。
 
-`dynamic_tsv_router.cpp` 当前将完整现状 Q 的导数与移除整网后的增量混用。待实现的同基态有限差分为：
+`dynamic_tsv_router.cpp` 保留原导数报价，并已实现默认关闭的 `--tsv-finite-quote 1`。可选同基态有限差分为：
 
 ```text
 Q_b = 移除旧网后，剩余账本的 Q
@@ -65,15 +65,17 @@ cost_C(slot) = 30 × [1 / sqrt(1 + Q_b)
                     - 1 / sqrt(1 + Q_b + m(slot))]
 ```
 
-**该有限差分报价尚未实现。** 新旧 slot 使用同一 Q_b；缓存只在账本未变的单次查询内有效。此式仅报价必要 TSV，实际重连后的布线/via、热相关和完整 S 才决定接受。须保持报价非负与全局索引下界等假设，并用完整重新计费核对。
+新旧 slot 使用同一 Q_b；缓存只在账本未变的单次查询内有效，实现采用数值稳定的非负形式。此式仅报价必要 TSV，实际重连后的布线/via、热相关和完整 S 才决定接受。三例完整预算探索没有新增入围候选最终获接受，仍默认关闭；计数与结果见[接续证据](../research/evidence/20261031-claude/README.md)。
 
-多网同格另需改造 owner/free-slot 索引和依赖二值密度的热检索系数。Pearson 状态支持 `count_square`，不代表整条检索和事务链已支持多重占用。最小实现保留唯一落点初始化，仅对 dynamic TSV 开独立同格选项：slot 保存多 owner，索引允许未满实验上限的格；先在有界候选池逐点精算 Δr，不复用二值热下界；资源按网累加。事务须同时恢复 owner/index、Pearson 和资源账本，未实现多 owner 重映射前禁用与 ownership rematch 的组合。
+当前多网同格实现采用 `tsv_policy.*` 的预布线 Hilbert 分组 hub 指派；`shared_tsv_auto.cpp` 负责可选的布线前启发式决策。资源按网累加，完整 Pearson 按真实计数计算。实际有同格时，`shared_landings_active_` 保护动态 TSV、V7 TSV 和 ownership rematch，继续执行固定 TSV 的 RRR/恢复。自动选择 unique 时这些阶段保持可用。auto 的 W/C 只是代理，不具完整 ΔS 的保守保证；分组初始化尚需截止时间防护。
+
+**通用多 owner 动态搜索仍未实现。** `TsvMoveSearch` 还是单 owner/free-slot 索引和二值密度热检索；未来动态同格方案须改造这些结构，不能只删除重复检查。可从有界候选池逐点精算 Δr 开始，事务同时恢复 owner/index、Pearson 和逐网资源账本。现有同格单测没有专门覆盖 RRR 故障回滚，下一步先补该组合测试。
 
 不同源/目的格移动的计数平方和变化为 `2*(count_to-count_from)+2`，须和独立全图重算逐步一致。测试覆盖 0→1→2 及反向移动、满格移出、同格 no-op、低/零热方差、同格其他网络的资源保留，以及拒绝、超时、注入失败后的完整恢复。多重占用时二值 hottest-K 上界不适用；落在更热格也不保证 Pearson 提高。
 
 ## 下一步修改顺序与分工
 
-以[最新来源报告](archive/llh-v13-tradeoff-plan-20261031.md)为准：**P1 有限差分报价 → P2 现成候选池消融及独立多网同格实验 → P3 线长候选和预算饥饿 → P4 局部拥塞 → P5 调度/可靠导出**。这些是待做工作，有限差分和多网同格均未实现。
+原顺序为[来源报告](archive/llh-v13-tradeoff-plan-20261031.md)中的 P1→P2→P3→P4→P5。P1 与预布线同格实验现已完成一次配对；最新状态以[交接更新](AGENT_HANDOFF.md)及[接续证据](../research/evidence/20261031-claude/README.md)为准。先补共享 RRR 回滚和初始化截止检查，再研究通用多 owner 动态搜索、候选池、005 线长和 003 局部热点。
 
 P1 主要修改 `dynamic_tsv_router.cpp`，核对同一基态、报价非负、索引下界和缓存有效期，并记录候选入围率。P2 不需要解除 bbox 硬限制：现有搜索已查询全局空闲落点；应先检查 resource pool、多次 top-K、MST/fanout 预算、residual 条件和首次成功退出。短线、低 Q、高热候选分别保留，有限 Pareto/beam 后仍按完整 S 验收。
 
@@ -93,7 +95,7 @@ CMake 收集 `src/*.cpp` 构建静态 `eda_core`，主程序是 `eda_router`。�
 | `eda_diagnose_site` | 官方观测与本地模型对账 |
 | `eda_diagnose_pin_floor` | PIN floor/轨道假设对照和拥塞上界诊断 |
 
-推荐 `scripts/run_current.sh` 和 `scripts/score_current.py`。内部 `run_v7/v8/v9`、`run_tsv_resource*`、`run_a150*` 保留为成熟 preset、回归依赖或历史消融；不能只看文件名判断规则，应记录实际执行参数及 stats。`submission/` 是打包模板，目录存在不等于已有当前正式可上传包。
+推荐研究入口 `scripts/run_current.sh` 和 `scripts/score_current.py`。代码包另用 `run_package.sh`，启用 hottest-K G 估计与自动同格；`build_submission_package.py` 从已核验的 21189 包复制第三方文件，`build_guide_submission.py` 打包显式选中的既有 Guide。内部 `run_v7/v8/v9`、`run_tsv_resource*`、`run_a150*` 保留为 preset/回归支撑，不能仅按文件名判断规则。`submission/` 仍是模板，已完成的包及摘要位于独立 output/Titan 任务目录，第三方库和大产物不入 Git。
 
 构建、CTest、sanitizer、布线和评分在 **benchmark-host** 独立任务目录执行。需要 Linux x86-64、C++20/CMake 3.22+、Python 3 和匹配 FLUTE 资产；运行库条件见 [SCORING.md](SCORING.md)。不要在本地旧工作树生成新构建或实验状态。
 
