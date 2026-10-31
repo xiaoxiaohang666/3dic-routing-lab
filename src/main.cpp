@@ -87,6 +87,7 @@ void usage(const char* p) {
         <<"--tsv-polish-thermal-candidates 0|1 (default 0; thermal-aware free-slot KD candidates)\n"
         <<"--tsv-shared-cell-limit N (default 1; experimental multi-net same-cell TSV hubs of at most N nets, global-grid only;\n"
         <<"    TSV move/rematch phases are skipped while N>1) --tsv-shared-hot-radius R (default 0; hottest hub within R rings)\n"
+        <<"--tsv-shared-auto 0|1 (default 0; choose hub size 4..32 or unique before routing from a conservative score estimate)\n"
         <<"--tsv-block-refine 0|1 (default 0; occupied-slot cost-improving permutations, official only)\n"
         <<"--tsv-block-size N (3..64, default 16) --tsv-block-passes N (1..16, default 2)\n"
         <<"--tsv-block-max-groups N (1..65536) --tsv-block-max-evals N (1..100000000)\n"
@@ -118,7 +119,7 @@ int main(int argc,char** argv) {
         for(int i=1;i<argc;++i) {
             std::string arg=argv[i];if(arg=="--help"||arg=="-h") {usage(argv[0]);return 0;}
             const std::set<std::string> recognized={"--def","--input-def","--lef","--lefs","--thermal-report","--thermal-json",
-                "--rules-profile","--tsv-obstacle-scope","--output","-o","--stats","--router","--rrr-rounds","--rrr-score-aware","--rrr-net-limit","--tsv-rounds","--search","--time-limit","--search-limit","--local-repair","--wirelength-rounds","--pin-local","--tsv-local","--tsv-resource-mode","--tsv-candidates","--tsv-max-candidates","--cell-pin-access","--fast-initial","--fast-quality","--fast-layer-pruning","--model","--official-runtime","--thermal-gain","--official-score-pricing","--nonpreferred","--tsv-assignment-polish","--tsv-polish-heat-weight","--tsv-polish-thermal","--tsv-polish-candidates","--tsv-polish-passes","--tsv-polish-bidirectional","--tsv-polish-thermal-candidates","--tsv-shared-cell-limit","--tsv-shared-hot-radius","--thermal-gain-estimate"};
+                "--rules-profile","--tsv-obstacle-scope","--output","-o","--stats","--router","--rrr-rounds","--rrr-score-aware","--rrr-net-limit","--tsv-rounds","--search","--time-limit","--search-limit","--local-repair","--wirelength-rounds","--pin-local","--tsv-local","--tsv-resource-mode","--tsv-candidates","--tsv-max-candidates","--cell-pin-access","--fast-initial","--fast-quality","--fast-layer-pruning","--model","--official-runtime","--thermal-gain","--official-score-pricing","--nonpreferred","--tsv-assignment-polish","--tsv-polish-heat-weight","--tsv-polish-thermal","--tsv-polish-candidates","--tsv-polish-passes","--tsv-polish-bidirectional","--tsv-polish-thermal-candidates","--tsv-shared-cell-limit","--tsv-shared-hot-radius","--tsv-shared-auto","--thermal-gain-estimate"};
             const std::set<std::string> recovery_options={"--large-recovery","--large-recovery-nets","--large-recovery-rounds","--large-recovery-seconds","--large-recovery-branches"};
             const std::set<std::string> v5_options={"--tsv-block-refine","--tsv-block-size","--tsv-block-passes","--tsv-block-max-groups","--tsv-block-max-evals","--tsv-block-seconds","--v5-pin-rooted","--v5-topology-max-pins"};
             const std::set<std::string> v7_options={"--v7-topology","--v7-rrr","--v7-rrr-net-limit","--v7-rrr-astar-net-limit","--v7-rrr-astar-expansions","--v7-rrr-astar-seconds","--v7-cell-cost","--resource-profile","--v7-tsv","--v7-tsv-nets","--v7-tsv-candidates","--v7-tsv-seconds"};
@@ -401,6 +402,11 @@ int main(int argc,char** argv) {
                 if(v>64) throw std::runtime_error("tsv-shared-cell-limit must be 1..64");
                 options.tsv_policy.shared_cell_limit=size_t(v);
             }
+            else if(arg=="--tsv-shared-auto") {
+                const int v=integer(value);
+                if(v>1) throw std::runtime_error("tsv-shared-auto must be 0 or 1");
+                options.tsv_shared_auto=options.tsv_policy.shared_cells_deferred=v;
+            }
             else if(arg=="--tsv-shared-hot-radius") {
                 const int v=integer(value);
                 if(v>64) throw std::runtime_error("tsv-shared-hot-radius must be 0..64");
@@ -482,6 +488,13 @@ int main(int argc,char** argv) {
             throw std::runtime_error("TSV landing pricing requires --tsv-track-demand 1 --v8-tsv-dynamic 1");
         if(options.tsv_finite_quote && !options.tsv_landing_pricing)
             throw std::runtime_error("--tsv-finite-quote 1 requires --tsv-landing-pricing 1");
+        if(options.tsv_shared_auto) {
+            if(options.tsv_policy.shared_cell_limit==1) options.tsv_policy.shared_cell_limit=32;
+            if(options.tsv_policy.shared_cell_limit<4)
+                throw std::runtime_error("--tsv-shared-auto 1 needs --tsv-shared-cell-limit of at least 4 (default 32)");
+            if(!options.official_model || options.tsv_policy.resource_mode!=eda::TsvResourceMode::GLOBAL_GRID)
+                throw std::runtime_error("--tsv-shared-auto 1 requires --model official --tsv-resource-mode global-grid");
+        }
         if(options.tsv_landing_rrr && (!options.official_metrics.tsv_track_demand || !options.v8_rrr))
             throw std::runtime_error("TSV landing RRR requires --tsv-track-demand 1 --v8-rrr 1");
         if(gain_estimate && (options.explicit_thermal_gain || !options.official_model))

@@ -1046,7 +1046,8 @@ std::vector<int> TsvPolicy::assign_projected(const std::vector<Net>& nets,const 
             }
             if (options_.assignment_block_refine) refine_occupied_blocks(nets,cross,anchors,chosen);
             shared_hubs_=shared_members_=shared_peak_load_=0;
-            if (options_.shared_cell_limit>1) share_cells(nets,cross,forced,heat,chosen);
+            if (options_.shared_cell_limit>1 && !options_.shared_cells_deferred)
+                share_cells(nets,cross,forced,heat,chosen,options_.shared_cell_limit,options_.shared_hot_radius);
             for (size_t n=0;n<cross.size();++n) {
                 if (!compatible(nets[cross[n]],chosen[n]))
                     throw std::logic_error("sparse projected assignment violates compatible resource policy");
@@ -1072,11 +1073,12 @@ std::vector<int> TsvPolicy::assign_projected(const std::vector<Net>& nets,const 
 // landings. This builds a candidate layout; the complete score must decide it.
 void TsvPolicy::share_cells(const std::vector<Net>& nets,const std::vector<int>& cross,
         const std::vector<std::vector<Point>>& forced,const std::vector<double>& heat,
-        std::vector<int>& chosen) const {
+        std::vector<int>& chosen,size_t limit,int hot_radius) const {
     if (options_.resource_mode!=TsvResourceMode::GLOBAL_GRID)
         throw std::logic_error("shared TSV cells require GLOBAL_GRID resources");
+    if (limit<2 || limit>options_.shared_cell_limit || hot_radius<0)
+        throw std::logic_error("shared TSV group size exceeds the configured landing budget");
     const auto& grid=graph_.grid();
-    const size_t limit=options_.shared_cell_limit;
     std::vector<int> load(slots_.size(),0);
     std::vector<size_t> flexible;
     for (size_t n=0;n<chosen.size();++n) {
@@ -1143,10 +1145,10 @@ void TsvPolicy::share_cells(const std::vector<Net>& nets,const std::vector<int>&
             bool more(int ring) const {return hottest || id<0 || ring<distance;}
         };
         Best best;best.values=&heat;best.admissible=admissible;
-        if (options_.shared_hot_radius>0) {
+        if (hot_radius>0) {
             best.hottest=true;
-            scan(c0,r0,0,options_.shared_hot_radius,best);
-            if (best.id<0) {best.hottest=false;scan(c0,r0,options_.shared_hot_radius+1,max_ring,best);}
+            scan(c0,r0,0,hot_radius,best);
+            if (best.id<0) {best.hottest=false;scan(c0,r0,hot_radius+1,max_ring,best);}
         } else scan(c0,r0,0,max_ring,best);
         if (best.id<0) throw std::runtime_error("TSV_SHARED_CELLS: no unused legal landing for a group");
         for (size_t g=begin;g<end;++g) chosen[flexible[g]]=best.id;
@@ -1154,6 +1156,31 @@ void TsvPolicy::share_cells(const std::vector<Net>& nets,const std::vector<int>&
         ++shared_hubs_;shared_members_+=end-begin;
         shared_peak_load_=std::max(shared_peak_load_,end-begin);
     }
+}
+
+std::vector<int> TsvPolicy::group_shared(const std::vector<Net>& nets,const ThermalParser& thermal,
+        const std::vector<int>& assignment,size_t limit,int hot_radius) const {
+    if (assignment.size()!=nets.size()) throw std::invalid_argument("shared TSV regrouping needs one entry per net");
+    std::vector<int> cross;std::vector<std::vector<Point>> forced;std::vector<int> chosen;
+    for (size_t i=0;i<nets.size();++i) {
+        if (!nets[i].is_cross_die) {
+            if (assignment[i]!=-1) throw std::invalid_argument("same-die net has a TSV landing");
+            continue;
+        }
+        if (!compatible(nets[i],assignment[i])) throw std::invalid_argument("shared TSV regrouping needs a legal unique assignment");
+        cross.push_back(int(i));forced.push_back(fixed_crossings(nets[i]));chosen.push_back(assignment[i]);
+    }
+    std::vector<double> heat(slots_.size(),0.0);
+    for (size_t id=0;id<slots_.size();++id) if (enabled_[id]) {
+        const auto p=slots_[id].point;
+        heat[id]=std::max(0.0,thermal.get_temperature(graph_.grid().get_col(p.x),graph_.grid().get_row(p.y))-
+                              thermal.ambient_temperature());
+    }
+    shared_hubs_=shared_members_=shared_peak_load_=0;
+    share_cells(nets,cross,forced,heat,chosen,limit,hot_radius);
+    auto result=assignment;
+    for (size_t n=0;n<cross.size();++n) result[size_t(cross[n])]=chosen[n];
+    return result;
 }
 
 void TsvPolicy::refine_occupied_blocks(const std::vector<Net>& nets,const std::vector<int>& cross,

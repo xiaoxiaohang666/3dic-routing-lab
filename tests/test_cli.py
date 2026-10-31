@@ -50,7 +50,8 @@ class CliTests(unittest.TestCase):
                      [*INPUTS, "--tsv-shared-hot-radius", "65"],
                      # The G proxy needs the official model and excludes an explicit G.
                      [*INPUTS, "--thermal-gain-estimate", "hottest-k"],
-                     [*INPUTS, "--thermal-gain-estimate", "median"]]:
+                     [*INPUTS, "--thermal-gain-estimate", "median"],
+                     [*INPUTS, "--tsv-shared-auto", "2"], [*INPUTS, "--tsv-shared-auto", "1"]]:
             with self.subTest(args=args):
                 self.run_cli(args)
 

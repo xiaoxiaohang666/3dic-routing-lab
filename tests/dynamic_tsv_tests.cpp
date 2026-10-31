@@ -186,6 +186,41 @@ struct DynamicTsvTestAccess {
                 r.rejection_reasons_.count("V7 TSV skipped: shared TSV cells")==1,"skips are recorded");
         r.options_=saved;exact(r,limit);
     }
+    // Automatic hubs: every candidate estimate is internally consistent, its
+    // Pearson is reproducible from the regrouped layout, and the routed state
+    // follows the documented adoption threshold.
+    static void shared_auto(NegotiatedRouter& r) {
+        require(r.route_all(),"automatic shared-cell fixture routes completely");
+        require(r.shared_auto_candidates_.size()==5,"group sizes 4, 8, 16, 24 and 32 are scored");
+        std::vector<int> unique;
+        const auto& grid=r.graph_.grid();std::vector<double> heat;
+        for(int row=0;row<grid.rows;++row) for(int col=0;col<grid.cols;++col)
+            heat.push_back(std::max(0.0,r.thermal_.get_temperature(col,row)-r.thermal_.ambient_temperature()));
+        const auto rho=[&](const std::vector<int>& layout) {
+            std::vector<int> counts(heat.size(),0);
+            for(int slot:layout) if(slot>=0) {
+                const auto& s=r.policy_.slots()[size_t(slot)];
+                ++counts[size_t(r.graph_.row(s.lower_node))*grid.cols+r.graph_.col(s.lower_node)];
+            }
+            return PearsonState(heat,counts).correlation();
+        };
+        double best=-1e300;
+        // The unique layout is the policy's deferred assignment.
+        unique=r.policy_.assign(r.def_.nets(),r.thermal_);
+        near(rho(unique),r.shared_auto_rho_unique_,"unique Pearson is the deferred assignment's");
+        for(const auto& c:r.shared_auto_candidates_) {
+            near(c.estimate,c.delta_t+c.delta_w+c.delta_c,"estimate is the sum of its parts");
+            require(c.delta_w<=1e-12,"grouping never claims a wirelength gain beyond the proxy");
+            const auto layout=r.policy_.group_shared(r.def_.nets(),r.thermal_,unique,c.limit,0);
+            near(c.rho,rho(layout),"candidate Pearson is reproducible from the regrouped layout");
+            best=std::max(best,c.estimate);
+        }
+        std::map<int,size_t> load;for(const auto& route:r.routes_) if(route.slot>=0) ++load[route.slot];
+        size_t peak=0;for(const auto& [slot,count]:load) {(void)slot;peak=std::max(peak,count);}
+        if(best>0.5) require(r.shared_auto_adopted_>1 && r.shared_landings_active_ && peak>1,"positive estimate adopts hubs");
+        else require(r.shared_auto_adopted_==1 && !r.shared_landings_active_ && peak==1,"weak estimates keep unique landings");
+        exact(r,32);
+    }
     static void run(NegotiatedRouter& r) {
         require(r.route_all(),"fixture routes completely");exact(r);risk_order(r);
         const auto saved=r.options_;const auto outer_deadline=r.deadline_;
@@ -301,6 +336,17 @@ int main(int argc,char** argv) {
         for(size_t limit:{size_t(2),size_t(3)}) {
             auto shared=options;shared.tsv_policy.shared_cell_limit=limit;
             NegotiatedRouter shared_router(parsed,lef,thermal,shared);DynamicTsvTestAccess::shared_cells(shared_router,limit);
+        }
+        {
+            auto automatic=options;automatic.tsv_shared_auto=true;
+            automatic.tsv_policy.shared_cells_deferred=true;automatic.tsv_policy.shared_cell_limit=32;
+            NegotiatedRouter auto_router(parsed,lef,thermal,automatic);DynamicTsvTestAccess::shared_auto(auto_router);
+            for(const auto& [deferred,limit]:std::vector<std::pair<bool,size_t>>{{false,32},{true,2}}) {
+                auto bad=automatic;bad.tsv_policy.shared_cells_deferred=deferred;bad.tsv_policy.shared_cell_limit=limit;
+                bool refused=false;
+                try {NegotiatedRouter rejected(parsed,lef,thermal,bad);} catch(const std::invalid_argument&) {refused=true;}
+                require(refused,"automatic hubs need deferred grouping and a budget of at least four");
+            }
         }
         auto invalid=options;invalid.tsv_policy.shared_cell_limit=2;invalid.future_tsv_reservation=true;
         invalid.official_metrics.tsv_track_demand=true;bool rejected=false;

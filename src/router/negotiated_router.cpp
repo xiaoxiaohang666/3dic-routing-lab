@@ -46,6 +46,8 @@ RouterOptions documented_options(RouterOptions o) {
     if(o.tsv_policy.shared_cell_limit>1 && (!o.official_model || o.tsv_policy.resource_mode!=TsvResourceMode::GLOBAL_GRID ||
        o.future_tsv_reservation))
         throw std::invalid_argument("shared TSV cells require official GLOBAL_GRID routing without future TSV reservations");
+    if(o.tsv_shared_auto!=o.tsv_policy.shared_cells_deferred || (o.tsv_shared_auto && o.tsv_policy.shared_cell_limit<4))
+        throw std::invalid_argument("automatic shared TSV cells need deferred grouping and a landing budget of at least 4");
     if(o.tsv_landing_rrr && (!o.official_metrics.tsv_track_demand || !o.v8_rrr))
         throw std::invalid_argument("TSV landing RRR requires track demand and hotspot RRR");
     if(o.future_tsv_reservation && !o.official_metrics.tsv_track_demand)
@@ -1897,7 +1899,7 @@ void NegotiatedRouter::optimize_tsv() {
 }
 void NegotiatedRouter::optimize_v7_tsv() {
     if(!options_.v7_tsv || options_.tsv_rounds<=0 || timed_out()) return;
-    if(policy_.shared_cell_limit()>1) {++rejection_reasons_["V7 TSV skipped: shared TSV cells"];return;}
+    if(shared_landings_active_) {++rejection_reasons_["V7 TSV skipped: shared TSV cells"];return;}
     const auto baseline=measure();
     std::map<size_t,NetRoute> journal;
     try {
@@ -2074,7 +2076,12 @@ void NegotiatedRouter::validate_complete() const {
 }
 bool NegotiatedRouter::route_all() {
     try {
-        const auto assignment=policy_.assign(def_.nets(),thermal_,options_.unified_budget?deadline_:std::chrono::steady_clock::time_point::max());routes_.resize(def_.nets().size());
+        auto assignment=policy_.assign(def_.nets(),thermal_,options_.unified_budget?deadline_:std::chrono::steady_clock::time_point::max());routes_.resize(def_.nets().size());
+        if(options_.tsv_shared_auto) assignment=choose_shared_landings(assignment);
+        {
+            std::unordered_map<int,int> loads;shared_landings_active_=false;
+            for(int slot:assignment) if(slot>=0 && ++loads[slot]>1) shared_landings_active_=true;
+        }
         prepare_tsv_reservations(assignment);
         std::vector<size_t> order(routes_.size());std::iota(order.begin(),order.end(),0);
         auto hpwl=[](const Net& n) {Rect b(n.pins[0].coord.x,n.pins[0].coord.y,n.pins[0].coord.x,n.pins[0].coord.y);
@@ -2372,7 +2379,15 @@ bool NegotiatedRouter::export_stats(const std::string& path) const {
            <<",\"slot_capacity\":"<<policy_.shared_cell_limit()
            <<",\"shared_cells\":{\"limit\":"<<policy_.shared_cell_limit()<<",\"hot_radius\":"<<options_.tsv_policy.shared_hot_radius
            <<",\"hubs\":"<<policy_.shared_hubs()<<",\"members\":"<<policy_.shared_members()<<",\"peak_load\":"<<policy_.shared_peak_load()
-           <<",\"tsv_move_phases\":\""<<(policy_.shared_cell_limit()>1?"skipped-unique-occupancy-assumption":"enabled-as-configured")<<"\"}"
+           <<",\"tsv_move_phases\":\""<<(shared_landings_active_?"skipped-unique-occupancy-assumption":"enabled-as-configured")<<"\""
+           <<",\"auto\":{\"enabled\":"<<(options_.tsv_shared_auto?"true":"false")<<",\"adopted_limit\":"<<shared_auto_adopted_
+           <<",\"unique_rho\":"<<shared_auto_rho_unique_<<",\"candidates\":[";
+        for(size_t k=0;k<shared_auto_candidates_.size();++k) {
+            const auto& c=shared_auto_candidates_[k];
+            out<<(k?",":"")<<"{\"limit\":"<<c.limit<<",\"rho\":"<<c.rho<<",\"dS_T\":"<<c.delta_t<<",\"dS_W_proxy\":"<<c.delta_w
+               <<",\"dS_C_bound\":"<<c.delta_c<<",\"estimate\":"<<c.estimate<<'}';
+        }
+        out<<"],\"rule\":\"pre-route estimate: exact count Pearson; attachment length x2 at L=1.3R; unique C upper bound from fixed+TSV interface Q; adopt if > 0.5\"}}"
            <<",\"tsv_per_cross_net\":1,\"status\":\"engineering global-routing model\"},\n\"metrics\":";
         metrics(best_metrics_);out<<",\n\"initial_metrics\":";metrics(initial_metrics_);
         if(options_.official_model) {out<<",\n\"wirelength_breakdown\":";write_cost_diagnostics(out,routes_,def_.nets(),pre_tsv_lengths_);}

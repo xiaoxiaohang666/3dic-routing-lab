@@ -41,6 +41,8 @@ struct TsvPolicyOptions {
     // shared_hot_radius rings.
     size_t shared_cell_limit{1};
     int shared_hot_radius{0};
+    // Keep assign() unique; the caller decides whether to apply group_shared.
+    bool shared_cells_deferred{false};
 };
 struct SlotCandidate {
     int id{-1};
@@ -76,6 +78,12 @@ public:
     size_t shared_hubs() const { return shared_hubs_; }
     size_t shared_members() const { return shared_members_; }
     size_t shared_peak_load() const { return shared_peak_load_; }
+    // Regroup flexible nets of a complete unique assignment into hubs of at
+    // most `limit` nets (limit <= shared_cell_limit), as assign() does when
+    // sharing is not deferred. Fixed interface crossings keep their landings.
+    std::vector<int> group_shared(const std::vector<Net>& nets, const ThermalParser& thermal,
+                                  const std::vector<int>& assignment, size_t limit, int hot_radius) const;
+    void clear_shared_statistics() const { shared_hubs_=shared_members_=shared_peak_load_=0; }
     int net_tsv_count(const Net& net) const { return net.is_cross_die ? 1 : 0; }
     const char* pairing_mode() const {
         if (options_.resource_mode==TsvResourceMode::GLOBAL_GRID) return "global-grid";
@@ -151,7 +159,7 @@ private:
     mutable size_t shared_hubs_{0}, shared_members_{0}, shared_peak_load_{0};
     void share_cells(const std::vector<Net>& nets, const std::vector<int>& cross,
                      const std::vector<std::vector<Point>>& forced, const std::vector<double>& heat,
-                     std::vector<int>& chosen) const;
+                     std::vector<int>& chosen, size_t limit, int hot_radius) const;
     mutable std::chrono::steady_clock::time_point assignment_deadline_{std::chrono::steady_clock::time_point::max()};
     void refine_occupied_blocks(const std::vector<Net>& nets, const std::vector<int>& cross,
                                 const std::vector<Point>& anchors, std::vector<int>& chosen) const;

@@ -57,6 +57,9 @@ struct RouterOptions {
     // residual Delta Q; true prices both landings by the exact C change on the
     // common ledger with the moving net removed. Requires tsv_landing_pricing.
     bool tsv_finite_quote{false};
+    // Decide multi-net same-cell TSV hubs before routing from a conservative
+    // complete-score estimate; requires deferred shared cells (limit >= 4).
+    bool tsv_shared_auto{false};
     // Resource-v6 switches stay independent for controlled experiments.
     bool future_tsv_reservation{false}, resource_local_rrr{false}, joint_layer_recovery{false};
     bool resource_candidate_pool{false}, thermal_coverage{false};
@@ -341,6 +344,13 @@ private:
     // Zero every official total, then add fixed PIN/OBS demand once through the
     // shared cell contract. Construction and checkpoint rebuilds both use it.
     void reset_official_fixed_ledger();
+    // Shared-cell landings: actual state after assignment, and the auto audit.
+    struct SharedAutoCandidate {size_t limit{};double rho{},delta_t{},delta_w{},delta_c{},estimate{};};
+    std::vector<SharedAutoCandidate> shared_auto_candidates_;
+    size_t shared_auto_adopted_{1};
+    double shared_auto_rho_unique_{0};
+    bool shared_landings_active_{false};
+    std::vector<int> choose_shared_landings(const std::vector<int>& unique);
     BudgetedRecoveryStats recovery_stats_;
     bool large_design() const { return def_.nets().size()>1000; }
     bool timed_out() const;

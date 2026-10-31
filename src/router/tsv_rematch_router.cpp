@@ -56,7 +56,7 @@ std::vector<int> rematch_assignment(const std::vector<std::vector<double>>& cost
 void NegotiatedRouter::rematch_tsv_ownership() {
     if(!options_.v8_tsv_rematch || !options_.official_model || timed_out() ||
        options_.v8_tsv_rematch_nets<2 || options_.v8_tsv_rematch_seconds<=counters_.v8_rematch_seconds) return;
-    if(policy_.shared_cell_limit()>1) {++rejection_reasons_["TSV rematch skipped: shared TSV cells"];return;}
+    if(shared_landings_active_) {++rejection_reasons_["TSV rematch skipped: shared TSV cells"];return;}
     const size_t group_limit=std::clamp(options_.v8_tsv_rematch_group_size,size_t(2),size_t(8));
     const auto baseline=measure();
     std::map<size_t,NetRoute> journal;

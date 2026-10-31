@@ -31,7 +31,7 @@ void NegotiatedRouter::run_v9_schedule() {
     }
     // TSV move families assume one net per landing; shared cells give their
     // budget to RRR and recovery instead of dispatching no-op slices.
-    const bool unique_landings=policy_.shared_cell_limit()<=1;
+    const bool unique_landings=!shared_landings_active_;
     std::array<bool,4> enabled{options_.rrr_rounds>0,unique_landings&&options_.v7_tsv&&options_.tsv_rounds>0,
                               unique_landings&&options_.v8_tsv_rematch,options_.large_recovery};
     std::array<size_t,4> visits{},stale{};
