@@ -67,8 +67,16 @@ add_executable(eda_diagnose_tsv_thermal scripts/diagnose_tsv_thermal.cpp)
 target_link_libraries(eda_diagnose_tsv_thermal PRIVATE eda_core)
 set_target_properties(eda_diagnose_tsv_thermal PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
+# Bounded fixed-membership experiment; production entry/defaults are unchanged.
+add_executable(eda_optimize_shared_hubs scripts/optimize_shared_hubs.cpp)
+target_link_libraries(eda_optimize_shared_hubs PRIVATE eda_core)
+set_target_properties(eda_optimize_shared_hubs PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(shared_hub_optimizer_tests tests/shared_hub_optimizer_tests.cpp)
+    target_link_libraries(shared_hub_optimizer_tests PRIVATE eda_core)
+    add_test(NAME shared_hub_optimizer COMMAND shared_hub_optimizer_tests "${CMAKE_CURRENT_BINARY_DIR}/shared-hub-artifacts")
     add_executable(grid_local_tests tests/grid_local_tests.cpp)
     target_link_libraries(grid_local_tests PRIVATE eda_core)
     add_test(NAME grid_local COMMAND grid_local_tests "${CMAKE_CURRENT_BINARY_DIR}/grid-local-artifacts"
@@ -101,6 +109,9 @@ if(BUILD_TESTING)
     add_test(NAME framework COMMAND framework_tests
         "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/test-artifacts")
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME derived_guide_package COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_derived_guide_package.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/derived-guide-artifacts")
     add_test(NAME pin_floor_diagnostics COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pin_floor_diagnostics.py" "$<TARGET_FILE:eda_diagnose_pin_floor>")
     add_test(NAME observed_guide_geometry COMMAND "${Python3_EXECUTABLE}"

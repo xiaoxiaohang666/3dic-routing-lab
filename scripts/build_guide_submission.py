@@ -6,6 +6,8 @@ Selection JSON: {"candidates": [{"case": "open_3d_case001", "guide": "...",
 are resolved against the selection file. The ZIP contains only root-level
 <case>.output.guide files; hashes and offline evidence stay in a separate JSON.
 No routing, scoring, input modification or platform upload is performed.
+Manifest may be a legacy router text log, or the hash/argv-bound JSON from a
+successful frozen-Guide transformation (explicitly router_run=false).
 """
 from __future__ import annotations
 
@@ -57,19 +59,56 @@ def candidate(item: dict, base: Path) -> dict:
     guide_hash = digest(paths["guide"])
     manifest_data = paths["manifest"].read_bytes()
     manifest = manifest_data.decode("utf-8")
-    bound = []
-    for line in manifest.splitlines():
-        match = re.fullmatch(r"([0-9a-fA-F]{64}) [ *](.+)", line)
-        if match:
-            source = (paths["manifest"].parent / match[2]).resolve()
-            if source == paths["guide"]:
-                bound.append(match[1].lower())
-    require(bool(bound) and all(value == guide_hash for value in bound),
-            f"{case}: Guide hash/path is absent or mismatched in manifest")
-    for stage in ("route", "score", "validate"):
-        exits = re.findall(r"(?m)^" + stage + r"_exit=(-?\d+)(?:\s|$)", manifest)
-        require(bool(exits) and all(value == "0" for value in exits),
-                f"{case}: manifest must record successful {stage}_exit")
+    provenance = {"kind": "historical-router-manifest"}
+    if manifest.lstrip().startswith("{"):
+        # A Guide transformation is not a new router run. Bind its real stages
+        # and original Guide explicitly instead of inventing route_exit=0.
+        record = json.loads(manifest)
+        require(record.get("status") == "PASS_OFFLINE_ONLY" and record.get("router_run") is False
+                and record.get("platform_run") is False, f"{case}: unsupported derived-Guide manifest")
+        require(record.get("inputs_unchanged") is True and bool(record.get("inputs_before"))
+                and record.get("inputs_before") == record.get("inputs_after"), f"{case}: derived inputs changed")
+        require(record.get("guide_sha256") == guide_hash, f"{case}: derived Guide hash mismatch")
+        outputs = record.get("outputs_sha256", {})
+        for key in ("guide", "readback", "validation"):
+            require(outputs.get(paths[key].name) == digest(paths[key]), f"{case}: derived {key} binding mismatch")
+        stages = {}
+        for event in record.get("events", []):
+            name = event.get("name")
+            require(name not in stages, f"{case}: duplicate derived stage")
+            stages[name] = event
+        for stage in ("optimize", "readback", "validate"):
+            require(stages.get(stage, {}).get("exit") == 0, f"{case}: derived {stage} failed/missing")
+
+        def argument(stage: str, flag: str) -> Path:
+            argv = stages[stage].get("argv", [])
+            require(argv.count(flag) == 1 and argv.index(flag) + 1 < len(argv), f"{case}: missing/ambiguous {stage} {flag}")
+            return Path(argv[argv.index(flag) + 1]).resolve(strict=True)
+
+        require(argument("optimize", "--output") == paths["guide"]
+                and argument("readback", "--guide") == paths["guide"]
+                and argument("readback", "--output") == paths["readback"]
+                and argument("validate", "--guide") == paths["guide"]
+                and argument("validate", "--report") == paths["validation"], f"{case}: derived command paths mismatch")
+        origin = argument("optimize", "--guide")
+        origin_hash = record["inputs_before"].get(str(origin))
+        require(origin != paths["guide"] and origin_hash == digest(origin), f"{case}: original Guide identity mismatch")
+        provenance = {"kind": "frozen-guide-postprocess", "router_run": False,
+                      "original_guide": str(origin), "original_guide_sha256": origin_hash}
+    else:
+        bound = []
+        for line in manifest.splitlines():
+            match = re.fullmatch(r"([0-9a-fA-F]{64}) [ *](.+)", line)
+            if match:
+                source = (paths["manifest"].parent / match[2]).resolve()
+                if source == paths["guide"]:
+                    bound.append(match[1].lower())
+        require(bool(bound) and all(value == guide_hash for value in bound),
+                f"{case}: Guide hash/path is absent or mismatched in manifest")
+        for stage in ("route", "score", "validate"):
+            exits = re.findall(r"(?m)^" + stage + r"_exit=(-?\d+)(?:\s|$)", manifest)
+            require(bool(exits) and all(value == "0" for value in exits),
+                    f"{case}: manifest must record successful {stage}_exit")
     validation, validation_hash = checked_json(paths["validation"])
     require(validation.get("status") == "PASS", f"{case}: validation is not PASS")
     require(validation.get("errors", {}).get("total") == 0,
@@ -105,7 +144,7 @@ def candidate(item: dict, base: Path) -> dict:
             "sha256": {"guide": guide_hash, "readback": readback_hash,
                        "validation": validation_hash,
                        "manifest": hashlib.sha256(manifest_data).hexdigest()},
-            "metrics": values, "validation_status": "PASS"}
+            "metrics": values, "validation_status": "PASS", "provenance": provenance}
 
 
 def main() -> int:
