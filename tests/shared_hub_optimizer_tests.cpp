@@ -86,6 +86,34 @@ int main(int argc,char** argv) {
     // gains must survive this comparator, not just the original detoured tree.
     size_t controls=0;for(const auto& t:weighted.trials) if(t.from==t.to&&t.reason=="current-hub-reattachment-control") ++controls;
     require(controls==1,"explicit current-hub control for the selected group");
+    // A partial split changes count variance; the optimizer's independent
+    // aggregate assertion must still agree with exact count-based Pearson.
+    metric.thermal_gain=.0001;
+    for(const std::string mode:{"outlier","gap"}) {
+        auto hetero=opt;hetero.heterogeneous=mode;auto split=original;const auto result=run(hetero,split);
+        require(result.moves==1&&result.after.S>result.before.S,"bounded heterogeneous split improves full fixture score");
+        std::map<int,size_t> load;size_t contacts=0;
+        for(const auto& net:def.nets()) {
+            const auto m=measure_official_net_guides(net,split.at(net.name),graph,lef,metric,100);
+            require(m.tsv_connections==1,"split preserves one TSV per real owner");++load[m.tsv_cells.front()];contacts+=m.tsv_connections;
+        }
+        require(load.size()==3&&contacts==4,"split adds a landing but no extra physical TSV owners");
+        auto repeat=original;run(hetero,repeat);require(geometry(split)==geometry(repeat),"heterogeneous repeat deterministic");
+        auto failing=original;hetero.before_commit=[] {throw std::runtime_error("heterogeneous failure");};bool aborted=false;
+        try {run(hetero,failing);} catch(const std::runtime_error& e) {aborted=std::string(e.what())=="heterogeneous failure";}
+        require(aborted&&geometry(failing)==frozen,"partial-owner staged failure preserves all nets");
+    }
+    auto branches=original;branches["n0"].push_back({700,800,900,900,"metal9"});
+    std::ostringstream census;write_shared_hub_diagnostics(census,def,lef,graph,thermal,metric,references,branches);
+    require(census.str().find("\"root_degree\":2")!=std::string::npos,"diagnostic retains and analyzes branch-root nets");
+    require(census.str().find("\"root_to_nearest_covered_pin_L\":null")==std::string::npos,"every die side receives actual covered root-to-PIN path");
+    save(dir/"diagnostic.json",census.str());
+    auto multi=opt;multi.heterogeneous="outlier";multi.max_groups=2;multi.max_moves=2;
+    auto two=original;const auto two_report=run(multi,two);
+    require(two_report.moves==2,"successive partial splits update the shared global Pearson state");
+    auto cap=multi;cap.max_groups=9;auto unchanged=original;bool capped=false;
+    try {run(cap,unchanged);} catch(const std::invalid_argument&) {capped=true;}
+    require(capped&&geometry(unchanged)==frozen,"hard eight-original-group cap checked before mutation");
     std::cout<<"shared_hub_optimizer "<<checks<<" checks passed\n";return 0;
  } catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}
 }

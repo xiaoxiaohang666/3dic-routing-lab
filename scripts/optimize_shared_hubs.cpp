@@ -17,17 +17,21 @@ double number(const std::string& s) {
 }
 int main(int argc,char** argv) {
  try {
-    std::string def_path,thermal_path,input,output,report_path,runtime;std::vector<std::string> lefs;
+    std::string def_path,thermal_path,input,output,report_path,runtime,diagnostics;std::vector<std::string> lefs;
     SharedHubOptions options;double gain=0;
     for(int i=1;i<argc;++i) {
         const std::string key=argv[i];
         if(key=="--help") {std::cout<<"Required: --def FILE --lef FILE --thermal FILE --guide FILE --output NEW.guide --report NEW.json --runtime DIR --thermal-gain G\n"
             <<"Optional: --max-groups 16 --max-moves 8 --max-candidates 12 --radius 3 --seconds 120 --search-nodes 20000 --max-tail-nodes 512\n"
-            <<"Analysis/control: --max-moves 0 preserves the input Guide bytes. No platform upload.\n";return 0;}
+            <<"Analysis/control: --max-moves 0 preserves the input Guide bytes. No platform upload.\n"
+            <<"--diagnostics NEW.json: full per-owner routed-tree census (use --max-moves 0).\n"
+            <<"--heterogeneous outlier|gap: opt-in subset splits; --max-groups and --max-moves must be <=8.\n";return 0;}
         if(i+1>=argc) throw std::invalid_argument("missing option value");
         const std::string value=argv[++i];
         if(key=="--def") def_path=value;else if(key=="--lef") lefs.push_back(value);else if(key=="--thermal") thermal_path=value;
         else if(key=="--guide") input=value;else if(key=="--output") output=value;else if(key=="--report") report_path=value;
+        else if(key=="--diagnostics") diagnostics=value;
+        else if(key=="--heterogeneous") options.heterogeneous=value;
         else if(key=="--runtime") runtime=value;else if(key=="--thermal-gain") gain=number(value);
         else if(key=="--max-groups") options.max_groups=integer(value);else if(key=="--max-moves") options.max_moves=integer(value);
         else if(key=="--max-candidates") options.max_candidates=integer(value);else if(key=="--radius") {const auto n=integer(value);if(n>32) throw std::invalid_argument("radius exceeds 32");options.radius=int(n);}
@@ -38,6 +42,10 @@ int main(int argc,char** argv) {
         throw std::invalid_argument("missing required input, output, runtime or explicit positive G");
     if(fs::exists(output)||fs::exists(report_path)||fs::absolute(output).lexically_normal()==fs::absolute(report_path).lexically_normal())
         throw std::invalid_argument("outputs must be distinct new files");
+    if(!diagnostics.empty()&&(fs::exists(diagnostics)||
+       fs::absolute(diagnostics).lexically_normal()==fs::absolute(output).lexically_normal()||
+       fs::absolute(diagnostics).lexically_normal()==fs::absolute(report_path).lexically_normal()))
+        throw std::invalid_argument("diagnostics must be a distinct new file");
     LefParser lef;for(const auto& p:lefs) if(!lef.parse(p)) throw std::runtime_error("LEF parse failed");
     DefParser def;if(!def.parse(def_path,lef,DefGridMapping::OFFICIAL_FULL)) throw std::runtime_error("DEF parse failed");
     RoutingGraph graph(def,lef,{RoutingGeometryMode::GLOBAL_GUIDE,false,true,false,true,true,1});
@@ -49,6 +57,12 @@ int main(int argc,char** argv) {
     NativeFluteBaseline flute(runtime);std::vector<double> references;
     for(const auto& net:def.nets()) references.push_back(flute.measure_net(net,std::max(def.gcell_pitch_x(),def.gcell_pitch_y()),metric));
     auto guides=compat::read_guides(input);
+    if(!diagnostics.empty()) {
+        if(fs::exists(diagnostics)) throw std::runtime_error("diagnostics must be new");
+        std::ofstream out(diagnostics);
+        write_shared_hub_diagnostics(out,def,lef,graph,thermal,metric,references,guides);
+        out.close();if(!out) throw std::runtime_error("diagnostic write failed");
+    }
     const auto result=optimize_shared_hubs(def,lef,graph,thermal,metric,references,guides,options);
     // A no-op must remain byte-identical, including net/rectangle ordering.
     if(result.moves==0) fs::copy_file(input,output,fs::copy_options::none);

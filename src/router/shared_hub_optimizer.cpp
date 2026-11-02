@@ -7,6 +7,7 @@
 #include <numeric>
 #include <queue>
 #include <set>
+#include <sstream>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -176,6 +177,12 @@ SharedHubReport optimize_shared_hubs(const DefParser& def,const LefParser& lef,c
     const ThermalParser& thermal,const OfficialMetricOptions& metric,const std::vector<double>& references,
     GuideMap& guides,const SharedHubOptions& options) {
     const auto started=Clock::now();SharedHubReport report;
+    report.heterogeneous=options.heterogeneous;
+    const bool split=!options.heterogeneous.empty();
+    if(split&&(options.heterogeneous!="outlier"&&options.heterogeneous!="gap"))
+        throw std::invalid_argument("heterogeneous mode must be outlier or gap");
+    if(split&&(options.max_groups>8||options.max_moves>8))
+        throw std::invalid_argument("heterogeneous trials are limited to eight original groups");
     if(!metric.a150_rules||!metric.tsv_track_demand||!metric.all_adjacent_overlaps||
        !metric.score_20261020||!graph.pin_zero_track_floor()||graph.congestion_overflow_scale()!=1)
         throw std::invalid_argument("shared hub experiment requires unchanged production A150 site contract");
@@ -216,23 +223,27 @@ SharedHubReport optimize_shared_hubs(const DefParser& def,const LefParser& lef,c
     report.after=report.before;
     // Whole-group moves to empty cells preserve sum(count^2); only the heat
     // product changes. Compute the exact count-based Pearson denominator once.
-    long double hs=0,h2=0,cs=0,c2=0;
-    for(size_t i=0;i<cells;++i) {hs+=heat[i];h2+=(long double)heat[i]*heat[i];cs+=counts[i];c2+=(long double)counts[i]*counts[i];}
+    long double hs=0,h2=0,cs=0,c2=0,product=0;
+    for(size_t i=0;i<cells;++i) {hs+=heat[i];h2+=(long double)heat[i]*heat[i];cs+=counts[i];c2+=(long double)counts[i]*counts[i];product+=(long double)heat[i]*counts[i];}
     const long double denominator=std::sqrt(std::max(0.L,h2-hs*hs/cells)*std::max(0.L,c2-cs*cs/cells));
+    std::map<int,std::vector<size_t>> eligible_members;
+    std::map<size_t,double> attachment_cost;
     for(const auto& [cell,members]:groups) if(members.size()>1) {
         SharedHubGroup group;group.cell=cell;group.members=members;group.eligible=true;
         for(size_t i:members) {
             const auto& net=def.nets()[i];const auto& raw=guides.at(net.name);
             const auto tail=detach(net,raw,cell,graph,lef,options.max_tail_nodes);
-            if(!tail.valid) {group.eligible=false;group.reason=tail.reason;break;}
+            if(!tail.valid) {if(split) continue;group.eligible=false;group.reason=tail.reason;break;}
             // Reject representation-sensitive baselines. An apparent gain from
             // merging old rectangles is outside a hub-position experiment.
             const auto canonical=encode(expand(raw,graph),graph,lef);
             const auto canonical_metric=measure_official_net_guides(net,canonical,graph,lef,metric,references[i]);
             if(!near(canonical_metric.wirelength,measured[i].wirelength)||
                canonical_metric.ordinary_connections!=measured[i].ordinary_connections||canonical_metric.demand!=measured[i].demand) {
+                if(split) continue;
                 group.eligible=false;group.reason="representation-sensitive-baseline";break;
             }
+            const double old_total=group.detachable_L;
             // Actual removable cells and ordinary-via interfaces, rather than a
             // PIN median/HPWL, rank a bounded number of expensive groups.
             for(const auto& side:tail.removed) for(int n:side) {
@@ -244,6 +255,12 @@ SharedHubReport optimize_shared_hubs(const DefParser& def,const LefParser& lef,c
                 if(original_cells.count(up)&&(!tail.retained.count(n)||!tail.retained.count(up)))
                     group.detachable_L+=metric.via_cost_ratio*std::max(metric.gcell_width_dbu,metric.gcell_height_dbu);
             }
+            attachment_cost[i]=group.detachable_L-old_total;
+            eligible_members[cell].push_back(i);
+        }
+        if(split) {
+            group.eligible=!eligible_members[cell].empty();group.detachable_L=0;
+            for(size_t i:eligible_members[cell]) group.detachable_L=std::max(group.detachable_L,attachment_cost[i]);
         }
         report.groups.push_back(std::move(group));
     }
@@ -259,9 +276,39 @@ SharedHubReport optimize_shared_hubs(const DefParser& def,const LefParser& lef,c
         if(Clock::now()>=deadline) {report.timed_out=true;break;}
         ++report.evaluated_groups;
         const int old=group.cell,oc=old%grid.cols,orr=old/grid.cols;
+        std::vector<size_t> moving=group.members;
+        if(split) {
+            moving=eligible_members.at(old);
+            std::stable_sort(moving.begin(),moving.end(),[&](size_t a,size_t b) {
+                return attachment_cost[a]!=attachment_cost[b]?attachment_cost[a]>attachment_cost[b]:a<b;
+            });
+            if(options.heterogeneous=="outlier"||moving.size()<3) moving.resize(1);
+            else {
+                // A natural gap between actual retained-tree anchor midpoints
+                // proposes one smaller group; final routes price every member.
+                std::map<size_t,std::pair<int,int>> center;
+                int minc=grid.cols*2,maxc=0,minr=grid.rows*2,maxr=0;
+                for(size_t i:moving) {
+                    const auto t=detach(def.nets()[i],guides.at(def.nets()[i].name),old,graph,lef,options.max_tail_nodes);
+                    const int c=graph.col(t.anchor[0])+graph.col(t.anchor[1]),r=graph.row(t.anchor[0])+graph.row(t.anchor[1]);
+                    center[i]={c,r};minc=std::min(minc,c);maxc=std::max(maxc,c);minr=std::min(minr,r);maxr=std::max(maxr,r);
+                }
+                const bool x=(maxc-minc)>=(maxr-minr);
+                const auto axis=[&](size_t i) {return x?center.at(i).first:center.at(i).second;};
+                std::stable_sort(moving.begin(),moving.end(),[&](size_t a,size_t b) {return axis(a)!=axis(b)?axis(a)<axis(b):a<b;});
+                size_t cut=1;int gap=-1;
+                for(size_t k=1;k<moving.size();++k) if(axis(moving[k])-axis(moving[k-1])>gap) {gap=axis(moving[k])-axis(moving[k-1]);cut=k;}
+                // The smaller natural cluster leaves all root branches and the
+                // larger cluster at their existing hub; at most twelve move.
+                if(cut<=moving.size()-cut) moving.resize(cut);
+                else moving.erase(moving.begin(),moving.begin()+static_cast<std::ptrdiff_t>(cut));
+                if(moving.size()>12) moving.resize(12);
+            }
+            if(moving.size()>=group.members.size()) {moving.resize(group.members.size()-1);}
+        }
         std::vector<Tail> tails;std::vector<NetCellContribution> previous;
         std::vector<int> ac,ar;
-        for(size_t i:group.members) {
+        for(size_t i:moving) {
             tails.push_back(detach(def.nets()[i],guides.at(def.nets()[i].name),old,graph,lef,options.max_tail_nodes));
             if(!tails.back().valid) throw std::logic_error("frozen shared group attachment changed unexpectedly");
             previous.push_back(measured[i].demand);
@@ -298,12 +345,12 @@ SharedHubReport optimize_shared_hubs(const DefParser& def,const LefParser& lef,c
         NetCellReplacementDelta best_delta;double best_score=report.after.S;
         for(int cell:shortlist) {
             if(Clock::now()>=deadline) {report.timed_out=true;break;}
-            SharedHubTrial trial;trial.from=old;trial.to=cell;trial.members=group.members.size();trial.before=report.after;trial.after=report.after;
+            SharedHubTrial trial;trial.from=old;trial.to=cell;trial.members=moving.size();trial.moved_members=moving;trial.before=report.after;trial.after=report.after;
             std::vector<std::vector<GuideRect>> new_guides;std::vector<NetGuideMetrics> new_metrics;
             std::vector<NetCellContribution> next;double delta_L=0;int64_t delta_vias=0;bool valid=true;
-            for(size_t k=0;k<group.members.size();++k) {
+            for(size_t k=0;k<moving.size();++k) {
                 if(Clock::now()>=deadline) {valid=false;report.timed_out=true;trial.reason="deadline";break;}
-                const size_t i=group.members[k];const auto& net=def.nets()[i];auto working=tails[k].retained;
+                const size_t i=moving[k];const auto& net=def.nets()[i];auto working=tails[k].retained;
                 const auto own=graph.own_pin_nodes(net);
                 for(int side=0;side<2;++side) {
                     const int root=graph.node(cell%grid.cols,cell/grid.cols,side?11:10);
@@ -325,13 +372,22 @@ SharedHubReport optimize_shared_hubs(const DefParser& def,const LefParser& lef,c
                 if(!valid) break;
                 delta_L+=m.wirelength-measured[i].wirelength;
                 delta_vias+=int64_t(m.ordinary_connections)-int64_t(measured[i].ordinary_connections);
+                trial.net_deltas.emplace_back(m.wirelength-measured[i].wirelength,
+                    int64_t(m.ordinary_connections)-int64_t(measured[i].ordinary_connections));
                 next.push_back(m.demand);new_guides.push_back(std::move(encoded));new_metrics.push_back(std::move(m));
             }
             report.search_expansions+=trial.expansions;
             if(valid) {
                 auto delta=compare_net_cell_replacement(graph,demand,previous,next);
-                const double rho=denominator>0?double((long double)report.after.rho+
+                double rho=denominator>0?double((long double)report.after.rho+
                     (long double)group.members.size()*(heat[size_t(cell)]-heat[size_t(old)])/denominator):0;
+                if(split) {
+                    const long double k=moving.size(),n=counts[size_t(old)];
+                    const long double square_after=cell==old?c2:c2+2*k*(k-n);
+                    const long double product_after=product+k*(heat[size_t(cell)]-heat[size_t(old)]);
+                    const long double denom=std::sqrt(std::max(0.L,h2-hs*hs/cells)*std::max(0.L,square_after-cs*cs/cells));
+                    rho=denom>0?std::clamp(double((product_after-hs*cs/cells)/denom),-1.,1.):0;
+                }
                 trial.after=quality(report.after.L+delta_L,std::max(0.,report.after.Q+double(delta.squared_delta)),rho,reference,
                     size_t(int64_t(report.after.ordinary_vias)+delta_vias),size_t(int64_t(report.after.zero_capacity)+delta.zero_capacity_delta),metric);
                 if(cell==old) {same_hub=trial.after;same_hub_valid=true;trial.reason="current-hub-reattachment-control";}
@@ -353,13 +409,14 @@ SharedHubReport optimize_shared_hubs(const DefParser& def,const LefParser& lef,c
             // exact overlap/via checks precede this indivisible group commit.
             if(options.before_commit) options.before_commit();
             if(Clock::now()>=deadline) {report.timed_out=true;break;}
-            for(size_t k=0;k<group.members.size();++k) {
-                const size_t i=group.members[k];guides.at(def.nets()[i].name).swap(best_guides[k]);
+            for(size_t k=0;k<moving.size();++k) {
+                const size_t i=moving[k];guides.at(def.nets()[i].name).swap(best_guides[k]);
                 measured[i]=std::move(best_metrics[k]);
             }
             for(auto [node,delta]:best_delta.demand_delta) demand[size_t(node)]+=delta;
             auto& trial=report.trials[best_trial];trial.accepted=true;trial.reason="accepted";
-            counts[size_t(old)]-=int(group.members.size());counts[size_t(trial.to)]+=int(group.members.size());
+            if(split) {const long double k=moving.size(),n=counts[size_t(old)];c2+=2*k*(k-n);product+=k*(heat[size_t(trial.to)]-heat[size_t(old)]);}
+            counts[size_t(old)]-=int(moving.size());counts[size_t(trial.to)]+=int(moving.size());
             report.after=trial.after;++report.moves;
         }
     }
@@ -372,7 +429,8 @@ SharedHubReport optimize_shared_hubs(const DefParser& def,const LefParser& lef,c
 }
 
 void write_shared_hub_report(std::ostream& out,const SharedHubReport& report,const DefParser& def) {
-    out<<std::setprecision(17)<<"{\"official_equivalence\":false,\"group_members_frozen\":true,\"before\":";write_quality(out,report.before);
+    out<<std::setprecision(17)<<"{\"official_equivalence\":false,\"heterogeneous\":"<<std::quoted(report.heterogeneous)
+       <<",\"group_members_frozen\":"<<(report.heterogeneous.empty()?"true":"false")<<",\"before\":";write_quality(out,report.before);
     out<<",\"after\":";write_quality(out,report.after);
     out<<",\"evaluated_groups\":"<<report.evaluated_groups<<",\"moves\":"<<report.moves<<",\"candidate_failures\":"<<report.candidate_failures
        <<",\"search_expansions\":"<<report.search_expansions<<",\"timed_out\":"<<(report.timed_out?"true":"false")
@@ -390,7 +448,94 @@ void write_shared_hub_report(std::ostream& out,const SharedHubReport& report,con
         if(!first) out<<',';first=false;
         out<<"{\"from\":"<<t.from<<",\"to\":"<<t.to<<",\"members\":"<<t.members<<",\"expansions\":"<<t.expansions
            <<",\"accepted\":"<<(t.accepted?"true":"false")<<",\"reason\":"<<std::quoted(t.reason)<<",\"before\":";
-        write_quality(out,t.before);out<<",\"after\":";write_quality(out,t.after);out<<'}';
+        write_quality(out,t.before);out<<",\"after\":";write_quality(out,t.after);
+        out<<",\"moved_members\":[";bool member_first=true;for(size_t i:t.moved_members) {if(!member_first) out<<',';member_first=false;out<<std::quoted(def.nets()[i].name);}out<<']';
+        out<<",\"net_delta_L_and_vias\":[";member_first=true;for(const auto& [L,v]:t.net_deltas) {if(!member_first) out<<',';member_first=false;out<<'['<<L<<','<<v<<']';}out<<"]}";
+    }
+    out<<"]}\n";
+}
+
+void write_shared_hub_diagnostics(std::ostream& out,const DefParser& def,const LefParser& lef,
+    const RoutingGraph& graph,const ThermalParser& thermal,const OfficialMetricOptions& metric,
+    const std::vector<double>& references,const GuideMap& guides) {
+    struct Entry {size_t index;int cell;double L,tail;size_t vias;std::string sides;bool safe;};
+    std::vector<Entry> entries;std::map<int,std::vector<size_t>> groups;
+    std::vector<int> demand(graph.size());const auto& grid=graph.grid();
+    const double pitch=std::max(metric.gcell_width_dbu,metric.gcell_height_dbu);
+    for(size_t i=0;i<def.nets().size();++i) {
+        const auto& net=def.nets()[i];const auto& raw=guides.at(net.name);
+        const auto measured=measure_official_net_guides(net,raw,graph,lef,metric,references.at(i));
+        for(auto [node,amount]:measured.demand) demand.at(size_t(node))+=amount;
+        if(!net.is_cross_die) continue;
+        if(measured.tsv_cells.size()!=1||measured.tsv_connections!=1) throw std::runtime_error("diagnostic input TSV mismatch");
+        const int cell=measured.tsv_cells.front(),c=cell%grid.cols,r=cell/grid.cols;
+        const auto covered=expand(raw,graph);const auto own=graph.own_pin_nodes(net);
+        std::ostringstream sides;bool safe=true;double tail_total=0;
+        sides<<std::setprecision(17)<<'[';
+        for(int side=0;side<2;++side) {
+            if(side) sides<<',';
+            const int low=side?11:1,high=side?20:10,root=graph.node(c,r,side?11:10);
+            const auto pin=[&](int n) {return std::binary_search(own.begin(),own.end(),n);};
+            auto adjacent=[&](int n,const Cells& present) {std::vector<int> v;for(int x:neighbors(n,graph,lef,low,high)) if(present.count(x)) v.push_back(x);return v;};
+            const size_t degree=adjacent(root,covered).size();
+            auto remaining=covered;int anchor=root;size_t removed=0,tail_vias=0;double tail_planar=0;
+            while(!pin(anchor)) {
+                const auto v=adjacent(anchor,remaining);if(v.size()!=1) break;
+                remaining.erase(anchor);tail_planar+=cell_length(anchor,graph,lef,metric);++removed;
+                tail_vias+=graph.layer(anchor)!=graph.layer(v.front());anchor=v.front();
+            }
+            const double tail=tail_planar+tail_vias*metric.via_cost_ratio*pitch;tail_total+=tail;
+            safe=safe&&removed>0&&removed<=512;
+            // Exact shortest covered-cell route to ANY covered own-PIN on this
+            // die. It is an inclusive path diagnostic, not removable attachment
+            // cost when a branch is encountered at the interface.
+            using Item=std::pair<double,int>;std::priority_queue<Item,std::vector<Item>,std::greater<Item>> pending;
+            std::unordered_map<int,double> dist;std::unordered_map<int,size_t> via_count;
+            dist[root]=cell_length(root,graph,lef,metric);via_count[root]=0;pending.emplace(dist[root],root);
+            double path=-1;size_t path_vias=0;
+            while(!pending.empty()) {
+                auto [d,n]=pending.top();pending.pop();if(d!=dist.at(n)) continue;
+                if(pin(n)) {path=d;path_vias=via_count.at(n);break;}
+                for(int v:adjacent(n,covered)) {
+                    const bool via=graph.layer(v)!=graph.layer(n);
+                    const double next=d+cell_length(v,graph,lef,metric)+(via?metric.via_cost_ratio*pitch:0);
+                    auto f=dist.find(v);if(f==dist.end()||next<f->second) {dist[v]=next;via_count[v]=via_count.at(n)+via;pending.emplace(next,v);}
+                }
+            }
+            sides<<"{\"root_degree\":"<<degree<<",\"root_pin\":"<<(pin(root)?"true":"false")<<",\"tail_nodes\":"<<removed
+                 <<",\"tail_planar_L\":"<<tail_planar<<",\"tail_vias\":"<<tail_vias<<",\"tail_L\":"<<tail
+                 <<",\"anchor\":["<<graph.col(anchor)<<','<<graph.row(anchor)<<','<<graph.layer(anchor)<<']'
+                 <<",\"root_to_nearest_covered_pin_L\":";if(path>=0) sides<<path;else sides<<"null";
+            sides<<",\"path_vias\":"<<path_vias<<'}';
+        }
+        sides<<']';groups[cell].push_back(entries.size());
+        entries.push_back({i,cell,measured.wirelength,tail_total,measured.ordinary_connections,sides.str(),safe});
+    }
+    out<<std::setprecision(17)<<"{\"official_equivalence\":false,\"tail_limit_reference\":512,\"nets\":[";
+    bool first=true;for(const auto& e:entries) {
+        if(!first) out<<',';first=false;
+        out<<"{\"index\":"<<e.index<<",\"name\":"<<std::quoted(def.nets()[e.index].name)<<",\"cell\":"<<e.cell<<",\"L\":"<<e.L
+           <<",\"ordinary_vias\":"<<e.vias<<",\"tail_L\":"<<e.tail<<",\"both_safe_512\":"<<(e.safe?"true":"false")<<",\"sides\":"<<e.sides<<'}';
+    }
+    out<<"],\"groups\":[";first=true;
+    for(const auto& [cell,ids]:groups) {
+        if(!first) out<<',';first=false;const int c=cell%grid.cols,r=cell/grid.cols;
+        out<<"{\"cell\":"<<cell<<",\"count\":"<<ids.size()<<",\"members\":[";
+        for(size_t k=0;k<ids.size();++k) {if(k) out<<',';out<<entries[ids[k]].index;}
+        double min_heat=std::numeric_limits<double>::infinity(),max_heat=0;size_t legal=0,empty=0;
+        for(int dr=-8;dr<=8;++dr) for(int dc=-8;dc<=8;++dc) {
+            const int x=c+dc,y=r+dr;if(x<0||y<0||x>=grid.cols||y>=grid.rows) continue;
+            if(graph.tsv_landing_legal(x,y,TsvObstacleScope::ALL_LAYERS)) {
+                ++legal;empty+=!groups.count(y*grid.cols+x);
+                const double h=std::max(0.,thermal.get_temperature(x,y)-thermal.ambient_temperature());min_heat=std::min(min_heat,h);max_heat=std::max(max_heat,h);
+            }
+        }
+        out<<"],\"heat\":"<<std::max(0.,thermal.get_temperature(c,r)-thermal.ambient_temperature())
+           <<",\"radius\":8,\"legal_cells\":"<<legal<<",\"empty_legal_cells\":"<<empty<<",\"heat_min\":"<<(legal?min_heat:0)<<",\"heat_max\":"<<max_heat<<",\"interface\":[";
+        for(int l:{10,11}) {if(l==11) out<<',';const int n=graph.node(c,r,l);
+            out<<"{\"layer\":"<<l<<",\"capacity\":"<<graph.official_capacity(n)<<",\"fixed\":"<<graph.official_obstacle_demand(n)
+               <<",\"guide_demand\":"<<demand[size_t(n)]<<",\"Q\":"<<double(official_resource_cell_contribution(graph,n,demand[size_t(n)]).squared)<<'}';}
+        out<<"]}";
     }
     out<<"]}\n";
 }
