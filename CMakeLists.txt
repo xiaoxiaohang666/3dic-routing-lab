@@ -390,3 +390,14 @@ set_target_properties(eda_diagnose_site PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${C
 if(BUILD_TESTING AND Python3_Interpreter_FOUND)
  add_test(NAME site_objective_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_site_objective_cli.py $<TARGET_FILE:eda_router>)
 endif()
+
+# Opt-in saved-Guide research executable; production router never invokes it.
+add_executable(eda_refine_guide_via_stacks scripts/refine_guide_via_stacks.cpp scripts/guide_via_stack_relocator.cpp)
+target_link_libraries(eda_refine_guide_via_stacks PRIVATE eda_core)
+set_target_properties(eda_refine_guide_via_stacks PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+if(BUILD_TESTING)
+    add_executable(guide_via_stack_relocator_tests tests/guide_via_stack_relocator_tests.cpp scripts/guide_via_stack_relocator.cpp)
+    target_include_directories(guide_via_stack_relocator_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/scripts")
+    target_link_libraries(guide_via_stack_relocator_tests PRIVATE eda_core)
+    add_test(NAME guide_via_stack_relocator COMMAND guide_via_stack_relocator_tests "${CMAKE_BINARY_DIR}/guide-via-stack-test-artifacts")
+endif()
