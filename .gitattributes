@@ -1,1 +1,5 @@
 *.sh text eol=lf
+
+# Archived evidence preserves original bytes and is not active source.
+handoff/** -text -diff
+research/evidence/** -text -diff
