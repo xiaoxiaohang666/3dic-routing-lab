@@ -817,9 +817,9 @@ PathResult NegotiatedRouter::search(const std::vector<PinAccess>& sources,const 
                 const int first=kind==0?h:v,last=kind==0?v:h;
                 const int begin=from?climb_escape_exit(*from,first,target):-1;
                 const int end=to?climb_escape_exit(*to,last,source):-1;
-                const bool shifted_begin=begin>=0 && (graph_.col(begin)!=graph_.col(source) || graph_.row(begin)!=graph_.row(source));
-                const bool shifted_end=end>=0 && (graph_.col(end)!=graph_.col(target) || graph_.row(end)!=graph_.row(target));
-                // The unshifted combination is the template tried just above.
+                const bool shifted_begin=begin>=0 && from->leaves_column(begin,graph_);
+                const bool shifted_end=end>=0 && to->leaves_column(end,graph_);
+                // Straight climbs at both ends are the template tried just above.
                 if(!shifted_begin && !shifted_end) continue;
                 std::vector<int> path=shifted_begin?from->path_to(begin,graph_):std::vector<int>{source};
                 bool legal=true;

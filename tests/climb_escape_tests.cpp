@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <set>
 #include <vector>
 
 using namespace eda;
@@ -39,6 +40,7 @@ size_t nodes_on_layer(const PathResult& path,const RoutingGraph& graph,int layer
 namespace eda {
 struct PinLocalTestAccess {
     static void begin_refinement(NegotiatedRouter& router) { router.initial_build_=false; }
+    static void set_present(NegotiatedRouter& router,double present) { router.present_=present; }
     static void fill(NegotiatedRouter& router,const RoutingGraph& graph,const Wall& wall) {
         for(int layer=wall[2];layer<=wall[3];++layer) {
             const int node=graph.node(wall[0],wall[1],layer);
@@ -163,6 +165,44 @@ int main(int argc,char** argv) {
         const auto region_on=route_case(on,region,refine);
         check_path(region_on,graph,source,target);
         require(region_on.cost<=region_off.cost,"the escape candidate may only replace a more expensive path");++checks;
+
+        // The free side points away from the goal. With a step cost of exactly one
+        // per cell, stopping beside the column and returning above the full cells
+        // tie, and a tie keeps the exit in the terminal's own column. That exit
+        // stepped aside on its way, so it still has to become a candidate. The
+        // next column is closed along its own vertical layers, leaving only paths
+        // that come back over the terminal. The fixture's other paths all cross a
+        // full cell.
+        {
+            RouterOptions tied=off;tied.climb_escape_radius=3;tied.score_unit_cost=false;
+            tied.v7_cell_cost=true;tied.official_score_pricing=true;
+            const int pin=graph.node(10,10,3),goal=graph.node(2,4,3);
+            std::vector<Wall> walls{{10,10,1,2},{10,10,4,5},{11,9,2,2},{11,9,4,4},{11,9,6,6}};
+            for(int r=2;r<=12;++r) for(int c=3;c<=9;++c) walls.push_back({c,r,1,5});
+            std::set<int> full;
+            for(const auto& wall:walls) for(int layer=wall[2];layer<=wall[3];++layer) full.insert(graph.node(wall[0],wall[1],layer));
+            const auto route_tied=[&](const RouterOptions& options,int from,int to) {
+                NegotiatedRouter router(def,lef,thermal,options);
+                PinLocalTestAccess::begin_refinement(router);
+                PinLocalTestAccess::set_present(router,1000);
+                for(const auto& wall:walls) PinLocalTestAccess::fill(router,graph,wall);
+                PinAccess access;access.node=from;
+                NetRoute own;own.nodes.insert(to);
+                return router.search({access},{to},own,1,10,false);
+            };
+            const auto crossings=[&](const PathResult& path) {
+                return std::count_if(path.nodes.begin(),path.nodes.end(),[&](int n){return full.count(n)>0;});
+            };
+            RouterOptions no_escape=tied;no_escape.climb_escape_radius=0;
+            for(const auto& ends:{std::pair(pin,goal),std::pair(goal,pin)}) {
+                const auto closed=route_tied(no_escape,ends.first,ends.second);
+                check_path(closed,graph,ends.first,ends.second);
+                require(crossings(closed)>0,"fixture must force the template through a full cell");++checks;
+                const auto open=route_tied(tied,ends.first,ends.second);
+                check_path(open,graph,ends.first,ends.second);
+                require(crossings(open)==0,"an exit that stepped aside and returned to its column was dropped");++checks;
+            }
+        }
 
         // Out-of-range radii are refused instead of silently clamped.
         RouterOptions wide=on;wide.climb_escape_radius=9;bool refused=false;

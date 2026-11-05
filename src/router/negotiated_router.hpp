@@ -219,6 +219,7 @@ struct ClimbEscapeField {
         return ((dr+radius)*(2*radius+1)+dc+radius)*(high-low+1)+l-low;
     }
     std::vector<int> path_to(int node,const RoutingGraph&) const;
+    bool leaves_column(int node,const RoutingGraph&) const;
 };
 struct CompleteMetrics {
     bool official_model{false};
