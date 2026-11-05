@@ -27,7 +27,7 @@ int outside(int c,int r,const CrossNet& n) {
 int main(int argc,char** argv) {
  try {
     std::string def_file,thermal_file,guide_file,output,scope_text="all-layers",margins_text="0,1,2,4,8,16,32,64,128",scales_text="1";
-    std::vector<std::string> lefs;double gain=0,length=0,reference=0;bool need_free=false;
+    std::vector<std::string> lefs;double gain=0,length=0,reference=0;bool need_free=false,limit_move=false;int max_rounds=8;
     for(int i=1;i<argc;++i) {
         const std::string key=argv[i];if(i+1>=argc) throw std::runtime_error("missing value for "+key);
         const std::string value=argv[++i];
@@ -36,6 +36,7 @@ int main(int argc,char** argv) {
         else if(key=="--margins") margins_text=value;else if(key=="--price-scales") scales_text=value;
         else if(key=="--thermal-gain") gain=std::stod(value);else if(key=="--length") length=std::stod(value);
         else if(key=="--reference") reference=std::stod(value);else if(key=="--need-free") need_free=std::stoi(value)!=0;
+        else if(key=="--limit-move") limit_move=std::stoi(value)!=0;else if(key=="--rounds") max_rounds=std::stoi(value);
         else throw std::runtime_error("unknown option "+key);
     }
     if(def_file.empty()||lefs.empty()||thermal_file.empty()||guide_file.empty()||output.empty()||!(gain>0)||!(length>0)||!(reference>0))
@@ -129,12 +130,16 @@ int main(int argc,char** argv) {
         auto moved=count;auto current=nets;std::vector<unsigned char> touched(k);double added=0;size_t rounds=0;
         long double free_choice_heat=0;double free_choice_added=0;
         // Repeat so that nets losing a contested hot cell can take the next one.
-        for(int round=0;round<8;++round) {
+        for(int round=0;round<max_rounds;++round) {
             std::vector<std::vector<Option>> options(k);
             for(size_t n=0;n<k;++n) {
                 const auto& net=current[n];const int base=outside(int(net.cell%cols),int(net.cell/cols),net);
                 auto& list=options[n];double best=0;double best_added=0;double best_heat=heat[net.cell];
-                for(int r=std::max(0,net.r0-margin);r<=std::min(rows-1,net.r1+margin);++r) for(int c=std::max(0,net.c0-margin);c<=std::min(cols-1,net.c1+margin);++c) {
+                // With --limit-move the margin is the largest distance from the net's original cell.
+                const int oc=int(nets[n].cell%cols),or_=int(nets[n].cell/cols);
+                const int rlo=limit_move?or_-margin:net.r0-margin,rhi=limit_move?or_+margin:net.r1+margin;
+                const int clo=limit_move?oc-margin:net.c0-margin,chi=limit_move?oc+margin:net.c1+margin;
+                for(int r=std::max(0,rlo);r<=std::min(rows-1,rhi);++r) for(int c=std::max(0,clo);c<=std::min(cols-1,chi);++c) {
                     const size_t cell=size_t(r)*cols+c;
                     if(cell==net.cell||!allowed[cell]||heat[cell]<=heat[net.cell]) continue;
                     const double extra=2*pitch*(outside(c,r,net)-base);
@@ -165,13 +170,15 @@ int main(int argc,char** argv) {
             if(!round_moves) break;
         }
         size_t moves=0;for(unsigned char t:touched) moves+=t;
+        double moved_distance=0;
+        for(size_t n=0;n<k;++n) moved_distance+=std::abs(int(current[n].cell%cols)-int(nets[n].cell%cols))+std::abs(int(current[n].cell/cols)-int(nets[n].cell/cols));
         const double rho=pearson(moved);
         const double dT=.25*(thermal_score(rho)-thermal_score(rho0)),dW=.45*(wire_score(length+added)-wire_score(length));
         // Upper bound: every net takes its best cell as if no cell were contested.
         const double f=std::sqrt(double(k)/double(cells)/(1-double(k)/double(cells)));
         const double rho_free=(double(free_choice_heat/k)-mean)/sigma*f;
         const double dS_free=.25*(thermal_score(rho_free)-thermal_score(rho0))+.45*(wire_score(length+free_choice_added)-wire_score(length));
-        out<<(first?"":",")<<"\n{\"margin_gcells\":"<<margin<<",\"price_scale\":"<<scale<<",\"rounds\":"<<rounds<<",\"moves\":"<<moves<<",\"rho\":"<<rho<<",\"T\":"<<thermal_score(rho)
+        out<<(first?"":",")<<"\n{\"margin_gcells\":"<<margin<<",\"price_scale\":"<<scale<<",\"limit_move\":"<<limit_move<<",\"rounds\":"<<rounds<<",\"moves\":"<<moves<<",\"mean_moved_gcells_all_tsvs\":"<<moved_distance/double(k)<<",\"rho\":"<<rho<<",\"T\":"<<thermal_score(rho)
            <<",\"added_length\":"<<added<<",\"added_length_percent\":"<<100*added/length<<",\"dS_T\":"<<dT<<",\"dS_W\":"<<dW<<",\"dS\":"<<dT+dW
            <<",\"no_contest_rho\":"<<rho_free<<",\"no_contest_added_length_percent\":"<<100*free_choice_added/length<<",\"no_contest_dS\":"<<dS_free<<'}';
         first=false;
