@@ -30,6 +30,8 @@ void usage(const char* p) {
         <<"--v8-recovery 0|1 (migration excess priority and layer/trunk candidates; requires large-recovery)\n"
         <<"--unified-budget 0|1 (all optional stages share routing cutoff; default 0)\n"
         <<"--congestion-price-cap N (>0..1e9, default 10000) --score-unit-cost 0|1 (finite Q loss)\n"
+        <<"--fixed-resource-model production|observed-20261104 (default production; see docs/rules/fixed-resource-model-20261105.md)\n"
+        <<"--congestion-target-q Q (>=0; default off; price and accept overflow at the C slope of this Q)\n"
         <<"--v7-rrr 0|1 (default 0; adaptive RRR and bounded congestion search)\n"
         <<"--v7-rrr-net-limit N (1..32768, default 4096)\n"
         <<"--v7-rrr-astar-net-limit N (0..4096, default 64; zero disables maze trials)\n"
@@ -120,7 +122,7 @@ int main(int argc,char** argv) {
         for(int i=1;i<argc;++i) {
             std::string arg=argv[i];if(arg=="--help"||arg=="-h") {usage(argv[0]);return 0;}
             const std::set<std::string> recognized={"--def","--input-def","--lef","--lefs","--thermal-report","--thermal-json",
-                "--rules-profile","--tsv-obstacle-scope","--output","-o","--stats","--router","--rrr-rounds","--rrr-score-aware","--rrr-net-limit","--tsv-rounds","--search","--time-limit","--search-limit","--local-repair","--wirelength-rounds","--pin-local","--tsv-local","--tsv-resource-mode","--tsv-candidates","--tsv-max-candidates","--cell-pin-access","--fast-initial","--fast-quality","--fast-layer-pruning","--model","--official-runtime","--thermal-gain","--official-score-pricing","--nonpreferred","--tsv-assignment-polish","--tsv-polish-heat-weight","--tsv-polish-thermal","--tsv-polish-candidates","--tsv-polish-passes","--tsv-polish-bidirectional","--tsv-polish-thermal-candidates","--tsv-shared-cell-limit","--tsv-shared-hot-radius","--tsv-shared-auto","--thermal-gain-estimate"};
+                "--rules-profile","--tsv-obstacle-scope","--output","-o","--stats","--router","--rrr-rounds","--rrr-score-aware","--rrr-net-limit","--tsv-rounds","--search","--time-limit","--search-limit","--local-repair","--wirelength-rounds","--pin-local","--tsv-local","--tsv-resource-mode","--tsv-candidates","--tsv-max-candidates","--cell-pin-access","--fast-initial","--fast-quality","--fast-layer-pruning","--model","--official-runtime","--thermal-gain","--official-score-pricing","--nonpreferred","--tsv-assignment-polish","--tsv-polish-heat-weight","--tsv-polish-thermal","--tsv-polish-candidates","--tsv-polish-passes","--tsv-polish-bidirectional","--tsv-polish-thermal-candidates","--tsv-shared-cell-limit","--tsv-shared-hot-radius","--tsv-shared-auto","--thermal-gain-estimate","--congestion-target-q","--fixed-resource-model"};
             const std::set<std::string> recovery_options={"--large-recovery","--large-recovery-nets","--large-recovery-rounds","--large-recovery-seconds","--large-recovery-branches"};
             const std::set<std::string> v5_options={"--tsv-block-refine","--tsv-block-size","--tsv-block-passes","--tsv-block-max-groups","--tsv-block-max-evals","--tsv-block-seconds","--v5-pin-rooted","--v5-topology-max-pins"};
             const std::set<std::string> v7_options={"--v7-topology","--v7-rrr","--v7-rrr-net-limit","--v7-rrr-astar-net-limit","--v7-rrr-astar-expansions","--v7-rrr-astar-seconds","--v7-cell-cost","--resource-profile","--v7-tsv","--v7-tsv-nets","--v7-tsv-candidates","--v7-tsv-seconds"};
@@ -437,6 +439,15 @@ int main(int argc,char** argv) {
                 if(value=="legacy-20261011") throw std::runtime_error("legacy score profile is diagnostic only; production routing uses 20261020");
                 options.official_metrics.score_20261020=true;
                 options.graph_options.score_20261020=options.official_metrics.score_20261020;
+            }
+            else if(arg=="--fixed-resource-model") {
+                if(value!="production"&&value!="observed-20261104") throw std::runtime_error("fixed-resource-model must be production or observed-20261104");
+                options.graph_options.observed_fixed_20261104=value=="observed-20261104";
+            }
+            else if(arg=="--congestion-target-q") {
+                size_t end=0;const double v=std::stod(value,&end);
+                if(end!=value.size()||!std::isfinite(v)||v<0) throw std::runtime_error("congestion-target-q must be nonnegative");
+                options.official_metrics.congestion_target_q=v;
             }
             else if(arg=="--official-score-pricing") {
                 const int v=integer(value);if(v>1) throw std::runtime_error("official-score-pricing must be 0 or 1");

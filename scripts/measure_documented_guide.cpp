@@ -15,7 +15,7 @@ using namespace eda;
 namespace fs=std::filesystem;
 int main(int argc,char** argv) {
  try {
-    std::string def_file,thermal_file,guide_file,runtime,output,csv,rules="a150-20261029",scope="all-layers";
+    std::string def_file,thermal_file,guide_file,runtime,output,csv,rules="a150-20261029",scope="all-layers",fixed_model="production";
     std::vector<std::string> lefs;double penalty_scale=0.1,thermal_gain=20;
     for(int i=1;i<argc;++i) {
         const std::string key=argv[i];
@@ -25,19 +25,20 @@ int main(int argc,char** argv) {
         else if(key=="--def") def_file=value;else if(key=="--lef") lefs.push_back(value);
         else if(key=="--thermal") thermal_file=value;else if(key=="--guide") guide_file=value;
         else if(key=="--runtime") runtime=value;else if(key=="--output") output=value;
-        else if(key=="--cells-csv") csv=value;else throw std::runtime_error("unknown measurement option");
+        else if(key=="--cells-csv") csv=value;else if(key=="--fixed-resource-model") fixed_model=value;else throw std::runtime_error("unknown measurement option");
     }
     if(def_file.empty()||lefs.empty()||thermal_file.empty()||guide_file.empty()||runtime.empty()||output.empty())
         throw std::runtime_error("required --def --lef --thermal --guide --runtime --output [--cells-csv]");
     if(rules!="a150-20261029"&&rules!="a150"&&rules!="historical") throw std::runtime_error("invalid rules profile");
     if(scope!="all-layers"&&scope!="interface") throw std::runtime_error("invalid TSV obstacle scope");
+    if(fixed_model!="production"&&fixed_model!="observed-20261104") throw std::runtime_error("invalid fixed resource model");
     if((penalty_scale!=0.1&&penalty_scale!=1)||!std::isfinite(thermal_gain)||thermal_gain<=0) throw std::runtime_error("invalid scalar parameters");
     const bool a150=rules!="historical",pin_floor=rules=="a150-20261029";
     const auto obstacle_scope=scope=="all-layers"?TsvObstacleScope::ALL_LAYERS:TsvObstacleScope::INTERFACE;
     if(fs::exists(output)||(!csv.empty()&&fs::exists(csv))) throw std::runtime_error("measurement output must be new");
     LefParser lef;for(const auto& file:lefs) if(!lef.parse(file)) throw std::runtime_error("LEF parse failed");
     DefParser def;if(!def.parse(def_file,lef,DefGridMapping::OFFICIAL_FULL)) throw std::runtime_error("DEF parse failed");
-    RoutingGraph graph(def,lef,{RoutingGeometryMode::GLOBAL_GUIDE,false,true,false,true,pin_floor,penalty_scale});
+    RoutingGraph graph(def,lef,{RoutingGeometryMode::GLOBAL_GUIDE,false,true,false,true,pin_floor,penalty_scale,fixed_model=="observed-20261104"});
     ThermalParser thermal;if(!thermal.parse_json(thermal_file,graph.grid(),def.dbu_per_micron(),def.die_area(),ThermalMapping::OFFICIAL_PREVIOUS))
         throw std::runtime_error("thermal parse failed");
     const auto guides=compat::read_guides(guide_file);

@@ -179,7 +179,8 @@ double NegotiatedRouter::official_congestion_price() const {
     long double scale=1;
     if(full_reference_>0) {
         const long double length=std::max(full_reference_,official_wirelength_+full_reference_-official_reference_);
-        const long double squared=std::max(0.0L,official_squared_overflow_+future_tsv_squared_delta_);
+        long double squared=std::max(0.0L,official_squared_overflow_+future_tsv_squared_delta_);
+        if(options_.official_metrics.congestion_target_q>=0) squared=std::min<long double>(squared,options_.official_metrics.congestion_target_q);
         scale=length*length/(300.0L*full_reference_*graph_.ell0()*std::pow(1.0L+squared,1.5L));
     }
     congestion_price_=double(std::clamp(scale,std::min(0.01L,(long double)options_.congestion_price_cap),(long double)options_.congestion_price_cap));
@@ -204,7 +205,8 @@ double NegotiatedRouter::official_cell_search_cost(int node) const {
     if(raw<=0) return graph_.documented_rules()?inf:1e6;
     const double dq=double(congestion_cell_delta(u,1,raw,graph_.congestion_overflow_scale()));
     if(options_.score_unit_cost) {
-        const double q=double(std::max(0.0L,official_squared_overflow_+future_tsv_squared_delta_));
+        double q=double(std::max(0.0L,official_squared_overflow_+future_tsv_squared_delta_));
+        if(options_.official_metrics.congestion_target_q>=0) q=std::min(q,options_.official_metrics.congestion_target_q);
         // Rationalized subtraction avoids cancellation for tiny marginal Q.
         const double a=std::sqrt(1+q),b=std::sqrt(1+q+dq);
         return present_*30*dq/(a*b*(a+b))+history_scale_*guide_history_[node]*scale;
@@ -1292,7 +1294,7 @@ std::tuple<size_t,double,long long,double,int> NegotiatedRouter::official_candid
         length+=std::max(0.0,double(full_reference_)-ref);ref=double(full_reference_);
     }
     const double w=official_wirelength_score(length,ref,options_.official_metrics)/100;
-    const double quality=0.45*w+0.30/std::sqrt(1.0+std::max(0.0,squared));
+    const double quality=0.45*w+0.30*official_acceptance_congestion(squared,options_.official_metrics)/100;
     return {options_.official_metrics.score_20261020?0:zeros,-quality,overflow,r.length,r.vias};
 }
 bool NegotiatedRouter::v5_topology_better(const NetRoute& trial,const NetRoute& baseline,const CompleteMetrics& base) const {
@@ -2202,7 +2204,9 @@ bool NegotiatedRouter::export_stats(const std::string& path) const {
                <<",\"correlation\":"<<m.guide.correlation<<",\"evaluator_tsv_count\":"<<m.guide.tsv_count
                <<",\"physical_tsv_count\":"<<m.physical_tsvs<<",\"physical_length_dbu\":"<<m.physical_length
                <<",\"ordinary_vias\":"<<m.vias;
-            if(m.official_model) out<<",\"wirelength_score\":"<<m.official.wirelength_score<<",\"congestion_score\":"<<m.official.congestion_score
+            if(m.official_model) out<<",\"wirelength_score\":"<<m.official.wirelength_score
+                <<",\"congestion_score\":"<<100.0/std::sqrt(1.0+m.official.squared_normalized_overflow)
+                <<",\"acceptance_congestion_score\":"<<m.official.congestion_score
                 <<",\"thermal_score\":"<<m.official.thermal_score<<",\"squared_normalized_overflow\":"<<m.official.squared_normalized_overflow<<",\"zero_capacity_cells\":"<<m.official.zero_capacity_cells;
             out<<"}";
         };

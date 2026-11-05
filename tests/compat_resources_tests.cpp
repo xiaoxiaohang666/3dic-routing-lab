@@ -320,6 +320,32 @@ void test_october29_pin_identity_is_per_placed_instance() {
 }
 } // namespace
 
+void test_observed_fixed_model() {
+    LefParser lef;
+    DefParser def;
+    parse(lef, def,
+        "MACRO block SIZE 300 BY 300 ; "
+        "OBS LAYER metal1 ; RECT 0 0 100 30 ; RECT 0 100 100 200 ; END "
+        "PIN between PORT LAYER metal1 ; RECT 0 12 100 14 ; END END between "
+        "PIN new_previous PORT LAYER metal1 ; RECT 0 32 100 34 ; END END new_previous "
+        "PIN previous_is_below_cell PORT LAYER metal1 ; RECT 0 101 100 103 ; END END previous_is_below_cell "
+        "END block",
+        "TRACKS Y 10 DO 15 STEP 20 LAYER metal1 ; ",
+        "COMPONENTS 1 ; - u block + PLACED ( 0 0 ) N ; END COMPONENTS ", "",
+        "NETS 1 ; - n ( u between ) ; END NETS");
+    ResourceOptions options{false, true, false, false, true};
+    const Resources resources(def, lef, options);
+    require(resources.fixed_demand(resources.node(0, 0, 1)) == 2,
+            "half-open OBS excludes its top track; zero-track PINs union their previous track index");
+    require(resources.capacity(resources.node(0, 1, 1)) == 5, "five tracks per cell");
+    require(resources.fixed_demand(resources.node(0, 1, 1)) == 5,
+            "a previous track below the cell joins the union and fixed demand is capped at capacity");
+    require(resources.pin_zero_track_floor_total() == 0, "observed model keeps no separate virtual floor");
+    bool rejected = false;
+    try { const Resources invalid(def, lef, ResourceOptions{false, true, false, true, true}); }
+    catch (const std::runtime_error&) { rejected = true; }
+    require(rejected, "observed model cannot be combined with the production floor");
+}
 int main(int argc, char** argv) {
     try {
         if (argc != 3) throw std::runtime_error("usage: compat_resources_tests source_root output_directory");
@@ -334,6 +360,7 @@ int main(int argc, char** argv) {
         test_platform_half_open_shape_tracks();
         test_october29_zero_track_pin_floor();
         test_october29_pin_identity_is_per_placed_instance();
+        test_observed_fixed_model();
         std::cout << "Compatibility resource tests passed: " << checks << " checks\n";
         return 0;
     } catch (const std::exception& error) {

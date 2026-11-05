@@ -13,7 +13,7 @@ CompleteMetrics NegotiatedRouter::recovery_metrics(const CompleteMetrics& invari
     m.official.squared_normalized_overflow=double(std::max(0.0L,official_squared_overflow_));
     m.official.zero_capacity_cells=official_zero_capacity_cells_;
     m.official.wirelength_score=official_wirelength_score(m.guide.wirelength,m.guide.reference,options_.official_metrics);
-    m.official.congestion_score=100/std::sqrt(1+m.official.squared_normalized_overflow);
+    m.official.congestion_score=official_acceptance_congestion(m.official.squared_normalized_overflow,options_.official_metrics);
     m.guide.quality=(.45*m.official.wirelength_score+.30*m.official.congestion_score+.25*m.official.thermal_score)/100;
     m.official.guide=m.guide;
     return m;

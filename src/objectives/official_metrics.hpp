@@ -1,4 +1,6 @@
 #pragma once
+#include <algorithm>
+#include <cmath>
 
 #include "objectives/guide_metrics.hpp"
 #include <memory>
@@ -25,7 +27,20 @@ struct OfficialMetricOptions {
     bool a150_rules{false};
     bool snap_reference_coordinates{false}; // Stabilize integral DBU values within floating-point roundoff.
     bool all_adjacent_overlaps{false}; // Count every real adjacent positive-area connection; site 20261029.
+    // Router-only pricing point, off when negative. C=100/sqrt(1+Q) is almost
+    // flat for large Q, so its true slope values overflow at nearly nothing and
+    // traps search far from the low-Q optimum. Above this Q, candidate ranking and
+    // transaction acceptance continue C along its tangent at the target instead.
+    // Below the target they are the true score. Never used by readback measurement.
+    double congestion_target_q{-1.0};
 };
+// Exact C at or below the target; first-order tangent extension above it.
+inline double official_acceptance_congestion(double q,const OfficialMetricOptions& o) {
+    const double r=std::sqrt(1.0+std::max(0.0,q));
+    if(o.congestion_target_q<0.0||q<=o.congestion_target_q) return 100.0/r;
+    const double r0=std::sqrt(1.0+o.congestion_target_q);
+    return 100.0/r0-50.0/(r0*r0*r0)*(q-o.congestion_target_q);
+}
 struct NativeFluteResult {
     double wirelength_dbu{0.0};
     int via_count{0};

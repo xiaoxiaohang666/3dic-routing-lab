@@ -24,6 +24,12 @@ struct ResourceOptions {
     // and overlapping PINs. OBS receives no minimum. Multiple RECTs of one PIN
     // do not multiply the floor. Published notes do not settle this granularity.
     bool pin_zero_track_floor{false};
+    // Geometry observed to reproduce four 2026-11-04 platform overflow maps exactly
+    // (see docs/rules/fixed-resource-model-20261105.md); opt-in, not a published rule.
+    // Every shape uses half-open track intervals; a PIN clip holding no track adds the
+    // previous global track index to the cell's union; fixed demand is capped at
+    // capacity. Routes and TSVs are never capped. Replaces pin_zero_track_floor.
+    bool observed_fixed_20261104{false};
 };
 
 // Resource model reconstructed from the published October 20 scoring notes.
