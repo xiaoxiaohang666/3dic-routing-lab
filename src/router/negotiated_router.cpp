@@ -27,9 +27,6 @@ RouterOptions documented_options(RouterOptions o) {
     if(o.climb_escape_radius<0 || o.climb_escape_radius>8 ||
        (o.climb_escape_radius && (!o.official_model || !o.official_metrics.score_20261020 || !o.fast_quality)))
         throw std::invalid_argument("climb escape requires radius 0..8, documented official rules and fast quality search");
-    if(o.route_order_mode<0 || o.route_order_mode>2 ||
-       (o.route_order_mode && (!o.official_model || !o.official_metrics.score_20261020)))
-        throw std::invalid_argument("route order mode requires 0..2 and documented official rules");
     if(o.official_model && o.official_metrics.score_20261020) {
         // Historical compatibility resources are only for offline diagnosis.
         // They must never decide a production routing transaction.
@@ -2152,7 +2149,18 @@ bool NegotiatedRouter::route_all() {
             for(int slot:assignment) if(slot>=0 && ++loads[slot]>1) shared_landings_active_=true;
         }
         prepare_tsv_reservations(assignment);
-        const auto order=initial_route_order(assignment);
+        std::vector<size_t> order(routes_.size());std::iota(order.begin(),order.end(),0);
+        auto hpwl=[](const Net& n) {Rect b(n.pins[0].coord.x,n.pins[0].coord.y,n.pins[0].coord.x,n.pins[0].coord.y);
+            for(const auto& p:n.pins) b=Rect(std::min(b.x1,p.coord.x),std::min(b.y1,p.coord.y),std::max(b.x2,p.coord.x),std::max(b.y2,p.coord.y));
+            return b.width()+b.height();};
+        std::vector<double> spans;for(const auto& n:def_.nets()) spans.push_back(hpwl(n));
+        std::stable_sort(order.begin(),order.end(),[&](size_t a,size_t b) {
+            const auto& x=def_.nets()[a];const auto& y=def_.nets()[b];
+            if(x.is_cross_die!=y.is_cross_die) return x.is_cross_die>y.is_cross_die;
+            if(x.pins.size()!=y.pins.size()) return x.pins.size()>y.pins.size();
+            if(spans[a]!=spans[b]) return spans[a]>spans[b];
+            return x.name<y.name;
+        });
         std::cout<<"[ASSIGNMENT] mode="<<policy_.pairing_mode()<<" slots="<<policy_.enabled_slots()
                  <<" candidate_edges="<<policy_.assignment_candidate_edges()<<std::endl;
         size_t completed=0;
@@ -2546,10 +2554,6 @@ bool NegotiatedRouter::export_stats(const std::string& path) const {
            <<",\"climb_escape_searches\":"<<counters_.climb_escape_searches
            <<",\"climb_escape_candidates\":"<<counters_.climb_escape_candidates
            <<",\"climb_escape_wins\":"<<counters_.climb_escape_wins
-           <<",\"route_order_hard_nets\":"<<counters_.route_order_hard_nets
-           <<",\"route_order_promoted_nets\":"<<counters_.route_order_promoted_nets
-           <<",\"route_order_blocked_terminals\":"<<counters_.route_order_blocked_terminals
-           <<",\"route_order_seconds\":"<<counters_.route_order_seconds
            <<",\"v8_rematch_groups\":"<<counters_.v8_rematch_groups
            <<",\"v8_rematch_candidates\":"<<counters_.v8_rematch_candidates
            <<",\"v8_rematch_accepted\":"<<counters_.v8_rematch_accepted
@@ -2630,7 +2634,6 @@ bool NegotiatedRouter::export_stats(const std::string& path) const {
            <<",\"hotspot_cell_limit\":"<<options_.hotspot_cell_limit
            <<",\"via_stack_radius\":"<<options_.via_stack_radius
            <<",\"climb_escape_radius\":"<<options_.climb_escape_radius
-           <<",\"route_order_mode\":"<<options_.route_order_mode
            <<",\"v8_tsv_probe_candidates\":"<<options_.v8_tsv_probe_candidates
            <<",\"v8_tsv_rematch_group_size\":"<<options_.v8_tsv_rematch_group_size
            <<",\"v8_tsv_rematch_nets\":"<<options_.v8_tsv_rematch_nets
