@@ -64,15 +64,20 @@ class A150Cli(unittest.TestCase):
    self.assertEqual(fresh['a150']['all_layer_violations'],0)
    # Official runs use the sideways step at radius 3; an explicit 0 turns it off.
    self.assertEqual(saved['options']['climb_escape_radius'],3)
-   quick=['--time-limit','10','--rrr-rounds','0','--tsv-rounds','0','--wirelength-rounds','0']
-   def radius(name,*flags,command=(ROUTER,),run_env=env):
+   def options_of(name,*flags,command=(ROUTER,),run_env=env):
     out=d/f'{name}.json'
-    run([*command,'--def',df,'--lef',lf,'--thermal-json',heat,*flags,'--output',d/f'{name}.guide','--stats',out,*quick],run_env)
-    return json.loads(out.read_text())['options']['climb_escape_radius']
-   self.assertEqual(radius('radius-off','--model','official','--official-runtime',RUNTIME,'--climb-escape-radius','0'),0)
+    run([*command,'--def',df,'--lef',lf,'--thermal-json',heat,*flags,'--output',d/f'{name}.guide','--stats',out,'--time-limit','10'],run_env)
+    return json.loads(out.read_text())
+   off=options_of('radius-off','--model','official','--official-runtime',RUNTIME,'--rrr-rounds','0','--tsv-rounds','0','--wirelength-rounds','0','--climb-escape-radius','0')
+   self.assertEqual(off['options']['climb_escape_radius'],0)
    # The platform entry goes through the same scripts as a built package.
    package=dict(env,EDA_ROUTER_BINARY=str(ROUTER),EDA_OFFICIAL_RUNTIME=str(RUNTIME))
    script=Path(__file__).resolve().parent.parent/'scripts/run_package.sh'
-   self.assertEqual(radius('radius-package',command=('bash',script),run_env=package),3)
+   packaged=options_of('radius-package',command=('bash',script),run_env=package)
+   self.assertEqual(packaged['options']['climb_escape_radius'],3)
+   self.assertEqual(packaged['options']['rrr_rounds'],64)
+   self.assertEqual(packaged['options']['rrr_net_limit'],8192)
+   self.assertEqual(packaged['options']['v7_rrr_net_limit'],32768)
+   self.assertTrue(packaged['resource_v6']['future_tsv_reservation'])
    for path,sha in inputs.items():self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),sha)
 if __name__=='__main__':unittest.main()

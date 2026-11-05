@@ -42,7 +42,7 @@ def main() -> int:
     p.add_argument("--output", type=pathlib.Path, required=True)
     p.add_argument("--label", required=True)
     p.add_argument("--source-commit", required=True)
-    p.add_argument("--time-limit", type=int, default=1740)
+    p.add_argument("--time-limit", type=int, default=3000)
     a = p.parse_args()
     if a.output.exists():
         p.error("output must be new: " + str(a.output))
@@ -73,7 +73,8 @@ def main() -> int:
         if path.is_file() and path.suffix in (".cpp", ".hpp", ".h"):
             files[str(path.relative_to(a.root))] = (path.read_bytes(), 0o644)
     help_text = subprocess.run([str(a.router), "--help"], capture_output=True, text=True).stdout
-    for flag in ("--thermal-gain-estimate", "--tsv-shared-auto", "--objective-profile", "--climb-escape-radius"):
+    for flag in ("--thermal-gain-estimate", "--objective-profile", "--climb-escape-radius", "--fixed-resource-model",
+                 "--congestion-target-q", "--rrr-reserved-seconds"):
         if flag not in help_text:
             raise SystemExit("router binary does not support " + flag)
     readme = f"""# 3D IC global router package {a.label}
@@ -81,14 +82,14 @@ def main() -> int:
 Linux x86-64, Ubuntu 22.04. Run: `bash run.sh --def INPUT.def --lef INPUT.lef --thermal-report THERMAL.json --output OUTPUT.guide`.
 Paths are relative to the caller. Time budget {a.time_limit} seconds (internal deadline keeps an export reserve).
 
-Production contract of the research entry `run_current.sh` (documented resources, A150 rules with the
-October 29 PIN floor, all-layer PIN/OBS TSV ban, site-20261029 scalar objective), plus:
+Settings of the research entry `run_fixed_resource_candidate.sh` (documented resources, A150 rules with
+the October 29 PIN floor, TSV ban only on cells with PIN/OBS on M10/M11, site-20261029 scalar objective,
+fixed occupancy read as `observed-20261104`, which comes from returned platform samples and is not a
+published rule), with these points:
 
 - the platform passes no per-case thermal gain, so the router uses G = 1.5 / hottest-K Pearson bound
   (K = cross-die nets) as an optimisation proxy; it is not an official calibration;
-- multi-net same-cell TSV hubs (A62/A150: allowed, demand added per net) are adopted only when a
-  conservative pre-route estimate of the complete score improves by more than 0.5 points; otherwise
-  each landing keeps one net;
+- each TSV landing keeps one net;
 - a via climb that would pass through full cells may first step sideways on the pin layer, up to 3
   cells (`--climb-escape-radius 3`); the candidate is taken only when its total cost is lower.
 
