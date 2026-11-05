@@ -67,6 +67,11 @@ add_executable(eda_diagnose_fixed_resources scripts/diagnose_fixed_resources.cpp
 target_link_libraries(eda_diagnose_fixed_resources PRIVATE eda_core)
 set_target_properties(eda_diagnose_fixed_resources PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
+# Read-only breakdown of where a Guide's congestion comes from; never linked into the router.
+add_executable(eda_diagnose_congestion_cause scripts/diagnose_congestion_cause.cpp)
+target_link_libraries(eda_diagnose_congestion_cause PRIVATE eda_core)
+set_target_properties(eda_diagnose_congestion_cause PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
 # Offline TSV thermal headroom estimate; never linked into the router.
 add_executable(eda_diagnose_tsv_thermal scripts/diagnose_tsv_thermal.cpp)
 target_link_libraries(eda_diagnose_tsv_thermal PRIVATE eda_core)
