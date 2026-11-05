@@ -41,7 +41,7 @@ def checked_json(path: Path) -> tuple[dict, str]:
     return value, hashlib.sha256(data).hexdigest()
 
 
-def candidate(item: dict, base: Path) -> dict:
+def candidate(item: dict, base: Path, scope: str = "all-layers") -> dict:
     require(isinstance(item, dict), "candidate must be an object")
     case = item.get("case")
     require(isinstance(case, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", case)
@@ -75,16 +75,24 @@ def candidate(item: dict, base: Path) -> dict:
     require(validation.get("errors", {}).get("total") == 0,
             f"{case}: validation errors are nonzero or missing")
     a150 = validation.get("a150", {})
-    require(a150.get("scope") == "all-routing-layers-both-dies",
-            f"{case}: validation must cover all routing layers")
-    require(a150.get("all_layers_violations", a150.get("all_layer_violations")) == 0,
-            f"{case}: A150 validation violations are nonzero or missing")
+    if scope == "interface":
+        # Official Q&A: the TSV ban checks only M10 and M11. See docs/rules/qa-notes-20261105.md.
+        require(a150.get("scope") == "interface-m10-m11",
+                f"{case}: validation must use the M10/M11 scope")
+        require(a150.get("interface_violations") == 0,
+                f"{case}: M10/M11 validation violations are nonzero or missing")
+    else:
+        require(a150.get("scope") == "all-routing-layers-both-dies",
+                f"{case}: validation must cover all routing layers")
+        require(a150.get("all_layers_violations", a150.get("all_layer_violations")) == 0,
+                f"{case}: A150 validation violations are nonzero or missing")
     readback, readback_hash = checked_json(paths["readback"])
     a150 = readback.get("a150", {})
-    require(a150.get("enabled") is True and a150.get("obstacle_scope") == "all-layers",
-            f"{case}: readback must use A150 all-layers")
-    require(a150.get("all_layer_violations", a150.get("all_layers_violations")) == 0,
-            f"{case}: readback A150 violations are nonzero or missing")
+    require(a150.get("enabled") is True and a150.get("obstacle_scope") == scope,
+            f"{case}: readback must use A150 {scope}")
+    violations = a150.get("interface_violations") if scope == "interface" else \
+        a150.get("all_layer_violations", a150.get("all_layers_violations"))
+    require(violations == 0, f"{case}: readback A150 violations are nonzero or missing")
     require(readback.get("congestion_overflow_scale_proxy") == 1
             and readback.get("all_adjacent_overlaps") is True,
             f"{case}: readback must use scale=1 and all adjacent overlaps")
@@ -113,6 +121,7 @@ def main() -> int:
     parser.add_argument("--selection", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--summary", required=True, type=Path)
+    parser.add_argument("--tsv-obstacle-scope", choices=("all-layers", "interface"), default="all-layers")
     args = parser.parse_args()
     selection = args.selection.resolve(strict=True)
     output, summary = args.output.resolve(), args.summary.resolve()
@@ -123,7 +132,7 @@ def main() -> int:
     document, selection_hash = checked_json(selection)
     entries = document.get("candidates")
     require(isinstance(entries, list) and bool(entries), "selection needs a nonempty candidates list")
-    candidates = [candidate(item, selection.parent) for item in entries]
+    candidates = [candidate(item, selection.parent, args.tsv_obstacle_scope) for item in entries]
     names = [item["case"].casefold() for item in candidates]
     require(len(set(names)) == len(names), "duplicate case identifier")
     inputs = {selection} | {Path(path) for item in candidates for path in item["sources"].values()}
@@ -152,6 +161,7 @@ def main() -> int:
               "archive": str(output), "archive_sha256": digest(output),
               "archive_size": output.stat().st_size, "candidates": candidates,
               "official_equivalence": False, "platform_uploaded": False,
+              "tsv_obstacle_scope": args.tsv_obstacle_scope,
               "evidence_boundary": "The run manifest binds each Guide path and SHA256. "
               "Readback/validation JSON has no embedded input identity or Guide hash; "
               "their association is the selected run directory, not an independent cryptographic "
