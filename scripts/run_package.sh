@@ -18,5 +18,5 @@ exec bash "$ROOT/scripts/run_a150_20261029.sh" \
     --thermal-gain-estimate hottest-k --tsv-shared-auto 1 "$@" \
     --model official --score-profile 20261020 \
     --resource-profile documented --rules-profile a150-20261029 \
-    --objective-profile site-20261029 --tsv-obstacle-scope all-layers \
+    --objective-profile site-20261029 --tsv-obstacle-scope interface \
     --tsv-resource-mode global-grid --tsv-track-demand 1

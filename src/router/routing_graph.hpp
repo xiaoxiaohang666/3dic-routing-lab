@@ -10,7 +10,9 @@ namespace eda {
 namespace compat { class Resources; }
 
 enum class RoutingGeometryMode { PHYSICAL_STRICT, GLOBAL_GUIDE };
-// A150 does not publish the PIN/OBS layer scope. Production selects ALL_LAYERS;
+// The official Q&A checks PIN/OBS only on M10/M11, and returned scores accepted it
+// (docs/rules/qa-notes-20261105.md). Production selects INTERFACE; ALL_LAYERS stays as
+// the stricter option for older Guides and rollback.
 // DISABLED exists only to replay older engineering fixtures and diagnostics.
 enum class TsvObstacleScope { DISABLED, INTERFACE, ALL_LAYERS };
 const char* tsv_obstacle_scope_name(TsvObstacleScope scope);

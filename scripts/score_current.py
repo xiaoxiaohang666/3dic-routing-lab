@@ -33,7 +33,7 @@ def main():
         if not f.parent.is_dir(): p.error("output parent must exist: " + str(f.parent))
     cmd = [str(a.binary.resolve()), "--def", str(a.def_file), "--thermal", str(a.thermal),
            "--guide", str(a.guide), "--runtime", str(a.runtime.resolve()), "--output", str(a.output),
-           "--rules-profile", "a150-20261029", "--tsv-obstacle-scope", "all-layers",
+           "--rules-profile", "a150-20261029", "--tsv-obstacle-scope", "interface",
            "--penalty-scale", "1", "--thermal-gain", str(a.thermal_gain)]
     for f in a.lef: cmd += ["--lef", str(f)]
     if a.cells_csv: cmd += ["--cells-csv", str(a.cells_csv)]

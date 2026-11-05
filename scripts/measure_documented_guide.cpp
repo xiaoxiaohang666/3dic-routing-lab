@@ -15,7 +15,7 @@ using namespace eda;
 namespace fs=std::filesystem;
 int main(int argc,char** argv) {
  try {
-    std::string def_file,thermal_file,guide_file,runtime,output,csv,rules="a150-20261029",scope="all-layers",fixed_model="production";
+    std::string def_file,thermal_file,guide_file,runtime,output,csv,rules="a150-20261029",scope="interface",fixed_model="production";
     std::vector<std::string> lefs;double penalty_scale=0.1,thermal_gain=20;
     for(int i=1;i<argc;++i) {
         const std::string key=argv[i];
