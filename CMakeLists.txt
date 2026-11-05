@@ -405,3 +405,10 @@ set_target_properties(eda_diagnose_site PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${C
 if(BUILD_TESTING AND Python3_Interpreter_FOUND)
  add_test(NAME site_objective_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_site_objective_cli.py $<TARGET_FILE:eda_router>)
 endif()
+
+if(BUILD_TESTING)
+    add_executable(climb_escape_tests tests/climb_escape_tests.cpp)
+    target_link_libraries(climb_escape_tests PRIVATE eda_core)
+    add_test(NAME climb_escape COMMAND climb_escape_tests "${CMAKE_BINARY_DIR}/climb-escape-artifacts"
+        "${CMAKE_CURRENT_SOURCE_DIR}/output/runtime/official-flute")
+endif()

@@ -24,6 +24,9 @@ RouterOptions documented_options(RouterOptions o) {
     if(o.via_stack_radius<0 || o.via_stack_radius>3 ||
        (o.via_stack_radius && (!o.v8_rrr || !o.official_model || !o.official_metrics.score_20261020)))
         throw std::invalid_argument("via stack repair requires radius 0..3 and documented V8 RRR");
+    if(o.climb_escape_radius<0 || o.climb_escape_radius>8 ||
+       (o.climb_escape_radius && (!o.official_model || !o.official_metrics.score_20261020 || !o.fast_quality)))
+        throw std::invalid_argument("climb escape requires radius 0..8, documented official rules and fast quality search");
     if(o.official_model && o.official_metrics.score_20261020) {
         // Historical compatibility resources are only for offline diagnosis.
         // They must never decide a production routing transaction.
@@ -647,6 +650,14 @@ PathResult NegotiatedRouter::search(const std::vector<PinAccess>& sources,const 
         }
         return std::pair(cost,options_.score_unit_cost || cost>base+1e-9);
     };
+    // Fields stay null unless a terminal column really crosses a full cell, so
+    // uncongested designs pay only for this check.
+    std::map<int,std::optional<ClimbEscapeField>> escape_fields;
+    const auto escape_field=[&](int terminal)->const ClimbEscapeField* {
+        auto [found,inserted]=escape_fields.try_emplace(terminal);
+        if(inserted && climb_column_congested(terminal,own,low,high)) found->second=climb_escape_field(terminal,own,low,high);
+        return found->second?&*found->second:nullptr;
+    };
     if(!dijkstra) {
         std::vector<std::pair<double,int>> ranked;ranked.reserve(targets.size());
         for(int n:targets) {
@@ -795,6 +806,59 @@ PathResult NegotiatedRouter::search(const std::vector<PinAccess>& sources,const 
                 stack(graph_.layer(target));if(!legal||path.back()!=target) continue;
                 consider(std::move(path),si);
                 if(kind<2) pair_has_legal_l=true;
+              }
+            }
+            const ClimbEscapeField* from=nullptr;const ClimbEscapeField* to=nullptr;
+            if(improve_fast && options_.climb_escape_radius>0) {from=escape_field(source);to=escape_field(target);}
+            if(from || to) {
+              ++counters_.climb_escape_searches;
+              for(auto [rank,h,v]:pairs) for(int kind:{0,1}) {
+                (void)rank;
+                const int first=kind==0?h:v,last=kind==0?v:h;
+                const int begin=from?climb_escape_exit(*from,first,target):-1;
+                const int end=to?climb_escape_exit(*to,last,source):-1;
+                const bool shifted_begin=begin>=0 && (graph_.col(begin)!=graph_.col(source) || graph_.row(begin)!=graph_.row(source));
+                const bool shifted_end=end>=0 && (graph_.col(end)!=graph_.col(target) || graph_.row(end)!=graph_.row(target));
+                // The unshifted combination is the template tried just above.
+                if(!shifted_begin && !shifted_end) continue;
+                std::vector<int> path=shifted_begin?from->path_to(begin,graph_):std::vector<int>{source};
+                bool legal=true;
+                auto append=[&](int n) {if(!legal)return;if(n<0||!graph_.legal_edge(path.back(),n)){legal=false;return;}path.push_back(n);};
+                auto stack=[&](int l) {while(legal&&graph_.layer(path.back())!=l) {
+                    const int n=path.back();append(graph_.node(graph_.col(n),graph_.row(n),graph_.layer(n)+(l>graph_.layer(n)?1:-1)));}};
+                auto leg=[&](int c,int r,int l) {
+                    if(graph_.col(path.back())==c && graph_.row(path.back())==r) return;
+                    stack(l);
+                    while(legal&&(graph_.col(path.back())!=c||graph_.row(path.back())!=r)) {
+                        const int n=path.back();int nc=graph_.col(n),nr=graph_.row(n);
+                        if(nc!=c) nc+=c>nc?1:-1;else nr+=r>nr?1:-1;
+                        append(graph_.node(nc,nr,l));
+                    }
+                };
+                const int finish=shifted_end?end:target;
+                const int sc=graph_.col(path.back()),sr=graph_.row(path.back()),tc=graph_.col(finish),tr=graph_.row(finish);
+                if(kind==0) {leg(tc,sr,h);leg(tc,tr,v);}
+                else {leg(sc,tr,v);leg(tc,tr,h);}
+                stack(graph_.layer(finish));
+                if(!legal || path.back()!=finish) continue;
+                if(shifted_end) {
+                    auto tail=to->path_to(end,graph_);
+                    path.insert(path.end(),tail.rbegin()+1,tail.rend());
+                }
+                // A shift can run back over its own wire; drop any such loop.
+                std::vector<int> simple;simple.reserve(path.size());std::unordered_map<int,size_t> seen;
+                for(int n:path) {
+                    const auto found=seen.find(n);
+                    if(found!=seen.end()) {
+                        for(size_t k=found->second+1;k<simple.size();++k) seen.erase(simple[k]);
+                        simple.resize(found->second+1);
+                    } else {seen.emplace(n,simple.size());simple.push_back(n);}
+                }
+                if(simple.back()!=target) continue;
+                ++counters_.climb_escape_candidates;
+                const double previous=incumbent.cost;
+                consider(std::move(simple),si);
+                if(incumbent.cost<previous) ++counters_.climb_escape_wins;
               }
             }
         }
@@ -2487,6 +2551,9 @@ bool NegotiatedRouter::export_stats(const std::string& path) const {
            <<",\"via_stack_illegal\":"<<counters_.via_stack_illegal
            <<",\"via_stack_selected_before_group_acceptance\":"<<counters_.via_stack_selected
            <<",\"via_stack_seconds\":"<<counters_.via_stack_seconds
+           <<",\"climb_escape_searches\":"<<counters_.climb_escape_searches
+           <<",\"climb_escape_candidates\":"<<counters_.climb_escape_candidates
+           <<",\"climb_escape_wins\":"<<counters_.climb_escape_wins
            <<",\"v8_rematch_groups\":"<<counters_.v8_rematch_groups
            <<",\"v8_rematch_candidates\":"<<counters_.v8_rematch_candidates
            <<",\"v8_rematch_accepted\":"<<counters_.v8_rematch_accepted
@@ -2566,6 +2633,7 @@ bool NegotiatedRouter::export_stats(const std::string& path) const {
            <<",\"v8_rrr_group_size\":"<<options_.v8_rrr_group_size
            <<",\"hotspot_cell_limit\":"<<options_.hotspot_cell_limit
            <<",\"via_stack_radius\":"<<options_.via_stack_radius
+           <<",\"climb_escape_radius\":"<<options_.climb_escape_radius
            <<",\"v8_tsv_probe_candidates\":"<<options_.v8_tsv_probe_candidates
            <<",\"v8_tsv_rematch_group_size\":"<<options_.v8_tsv_rematch_group_size
            <<",\"v8_tsv_rematch_nets\":"<<options_.v8_tsv_rematch_nets
