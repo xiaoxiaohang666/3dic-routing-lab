@@ -48,6 +48,9 @@ struct RouterOptions {
     // Search radius (GCells) for leaving a terminal column whose climb crosses
     // full cells. Zero keeps the existing templates only.
     int climb_escape_radius{0};
+    // Initial routing order. 0 keeps today's order; 1 routes hard-to-leave nets
+    // first and keeps cross-die first among the rest; 2 also drops cross-die first.
+    int route_order_mode{0};
     size_t v8_tsv_rematch_group_size{6}, v8_tsv_rematch_nets{256};
     double v8_tsv_rematch_seconds{30};
     // V9 mechanisms are independent for same-binary documented-rule ablations.
@@ -158,6 +161,8 @@ struct RouterCounters {
     size_t via_stack_chains{}, via_stack_candidates{}, via_stack_illegal{}, via_stack_selected{};
     double via_stack_seconds{};
     size_t climb_escape_searches{}, climb_escape_candidates{}, climb_escape_wins{};
+    size_t route_order_hard_nets{}, route_order_promoted_nets{}, route_order_blocked_terminals{};
+    double route_order_seconds{};
     size_t tsv_tree_move_attempted{}, tsv_tree_move_built{}, tsv_tree_move_unavailable{},
            tsv_tree_move_failures{}, tsv_tree_move_selected{}, tsv_tree_move_accepted{}, tsv_tree_move_compared{};
     double tsv_tree_move_seconds{}, tsv_tree_move_compared_length_delta{},
@@ -206,6 +211,10 @@ struct NetRoute {
     NetGuideMetrics measured;
     int slot{-1}, vias{};
     double length{};
+};
+// How hard one terminal is to leave, from the input geometry only.
+struct RouteOrderTerminal {
+    int straight_full{},usable_columns{},window_columns{};
 };
 // Costs from a terminal to the cells of a small window around its column.
 struct ClimbEscapeField {
@@ -411,6 +420,9 @@ private:
     bool climb_column_congested(int,const NetRoute&,int,int) const;
     ClimbEscapeField climb_escape_field(int,const NetRoute&,int,int) const;
     int climb_escape_exit(const ClimbEscapeField&,int,int) const;
+    bool full_before_routing(size_t,int) const;
+    RouteOrderTerminal route_order_terminal(size_t,int,int,int,int,int) const;
+    std::vector<size_t> initial_route_order(const std::vector<int>&);
     void optimize_dynamic_tsv();
     void rematch_tsv_ownership();
     void recover_wirelength();

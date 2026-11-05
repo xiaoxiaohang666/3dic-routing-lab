@@ -412,3 +412,10 @@ if(BUILD_TESTING)
     add_test(NAME climb_escape COMMAND climb_escape_tests "${CMAKE_BINARY_DIR}/climb-escape-artifacts"
         "${CMAKE_CURRENT_SOURCE_DIR}/output/runtime/official-flute")
 endif()
+
+if(BUILD_TESTING)
+    add_executable(route_order_tests tests/route_order_tests.cpp)
+    target_link_libraries(route_order_tests PRIVATE eda_core)
+    add_test(NAME route_order COMMAND route_order_tests "${CMAKE_BINARY_DIR}/route-order-artifacts"
+        "${CMAKE_CURRENT_SOURCE_DIR}/output/runtime/official-flute")
+endif()
