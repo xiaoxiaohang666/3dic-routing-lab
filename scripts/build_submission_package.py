@@ -73,7 +73,7 @@ def main() -> int:
         if path.is_file() and path.suffix in (".cpp", ".hpp", ".h"):
             files[str(path.relative_to(a.root))] = (path.read_bytes(), 0o644)
     help_text = subprocess.run([str(a.router), "--help"], capture_output=True, text=True).stdout
-    for flag in ("--thermal-gain-estimate", "--tsv-shared-auto", "--objective-profile"):
+    for flag in ("--thermal-gain-estimate", "--tsv-shared-auto", "--objective-profile", "--climb-escape-radius"):
         if flag not in help_text:
             raise SystemExit("router binary does not support " + flag)
     readme = f"""# 3D IC global router package {a.label}
@@ -88,7 +88,9 @@ October 29 PIN floor, all-layer PIN/OBS TSV ban, site-20261029 scalar objective)
   (K = cross-die nets) as an optimisation proxy; it is not an official calibration;
 - multi-net same-cell TSV hubs (A62/A150: allowed, demand added per net) are adopted only when a
   conservative pre-route estimate of the complete score improves by more than 0.5 points; otherwise
-  each landing keeps one net.
+  each landing keeps one net;
+- a via climb that would pass through full cells may first step sideways on the pin layer, up to 3
+  cells (`--climb-escape-radius 3`); the candidate is taken only when its total cost is lower.
 
 Source commit {a.source_commit}. Offline readback scores are model estimates, not official results.
 """

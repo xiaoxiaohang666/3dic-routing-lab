@@ -25,8 +25,8 @@ class A150Cli(unittest.TestCase):
    heat.write_text(json.dumps({'meta':{'ambientTemp':25},'nodes':[[5+10*c,5+10*r,0,30+c+2*r] for r in range(4) for c in range(4)]}))
    inputs={p:hashlib.sha256(p.read_bytes()).hexdigest() for p in (lf,df,heat)}
    env=dict(os.environ);env['LD_LIBRARY_PATH']=str(RUNTIME.parent.parent/'lib')+':'+str(RUNTIME)+':'+env.get('LD_LIBRARY_PATH','')
-   def run(args):
-    p=subprocess.run(list(map(str,args)),env=env,capture_output=True,text=True,timeout=60)
+   def run(args,run_env=env):
+    p=subprocess.run(list(map(str,args)),env=run_env,capture_output=True,text=True,timeout=60)
     self.assertEqual(p.returncode,0,p.stdout+p.stderr)
    run([VALIDATOR,'--def',df,'--lef',lf,'--model','official','--tsv-resources','global-grid','--rules-profile','a150-20261029','--tsv-supply-only','1','--report',d/'supply.json'])
    supply=json.loads((d/'supply.json').read_text())['a150']
@@ -62,5 +62,17 @@ class A150Cli(unittest.TestCase):
    fresh=json.loads((d/'strict-fresh.json').read_text())
    self.assertEqual(fresh['a150']['obstacle_scope'],'all-layers')
    self.assertEqual(fresh['a150']['all_layer_violations'],0)
+   # Official runs use the sideways step at radius 3; an explicit 0 turns it off.
+   self.assertEqual(saved['options']['climb_escape_radius'],3)
+   quick=['--time-limit','10','--rrr-rounds','0','--tsv-rounds','0','--wirelength-rounds','0']
+   def radius(name,*flags,command=(ROUTER,),run_env=env):
+    out=d/f'{name}.json'
+    run([*command,'--def',df,'--lef',lf,'--thermal-json',heat,*flags,'--output',d/f'{name}.guide','--stats',out,*quick],run_env)
+    return json.loads(out.read_text())['options']['climb_escape_radius']
+   self.assertEqual(radius('radius-off','--model','official','--official-runtime',RUNTIME,'--climb-escape-radius','0'),0)
+   # The platform entry goes through the same scripts as a built package.
+   package=dict(env,EDA_ROUTER_BINARY=str(ROUTER),EDA_OFFICIAL_RUNTIME=str(RUNTIME))
+   script=Path(__file__).resolve().parent.parent/'scripts/run_package.sh'
+   self.assertEqual(radius('radius-package',command=('bash',script),run_env=package),3)
    for path,sha in inputs.items():self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),sha)
 if __name__=='__main__':unittest.main()
