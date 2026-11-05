@@ -44,7 +44,7 @@ void usage(const char* p) {
         <<"--v7-topology 0|1 (default 0; compare shared pin-rooted trees during initial/refinement routing)\n"
         <<"--v7-cell-cost 0|1 (default 0; incremental own-tree cell reuse)\n"
         <<"--rules-profile a150-20261029|a150|historical (official default a150-20261029; older profiles replay)\n"
-        <<"--tsv-obstacle-scope all-layers|interface (a150 default all-layers; layer scope assumption)\n"
+        <<"--tsv-obstacle-scope interface|all-layers (a150 default interface: official Q&A checks only M10/M11)\n"
         <<"--resource-profile documented|20261020 (production uses documented resources)\n"
         <<"--future-tsv-reservation 0|1 (search-only unbuilt TSV promises)\n"
         <<"--resource-local-rrr 0|1 (global hotspots plus bounded landing repair)\n"
@@ -118,7 +118,7 @@ int main(int argc,char** argv) {
         bool explicit_block_budget=false,explicit_topology_budget=false,explicit_nonpreferred=false,explicit_v7_budget=false,explicit_v7_tsv_budget=false;
         options.process_started=std::chrono::steady_clock::now();
         std::set<std::string> explicit_v8,explicit_v9;
-        std::string rules_profile="a150-20261029",obstacle_scope="all-layers",objective_profile="documented";
+        std::string rules_profile="a150-20261029",obstacle_scope="interface",objective_profile="documented";
         bool explicit_rules=false,explicit_scope=false,explicit_track_demand=false;
         for(int i=1;i<argc;++i) {
             std::string arg=argv[i];if(arg=="--help"||arg=="-h") {usage(argv[0]);return 0;}

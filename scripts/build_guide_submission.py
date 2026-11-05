@@ -41,7 +41,7 @@ def checked_json(path: Path) -> tuple[dict, str]:
     return value, hashlib.sha256(data).hexdigest()
 
 
-def candidate(item: dict, base: Path, scope: str = "all-layers") -> dict:
+def candidate(item: dict, base: Path, scope: str = "interface") -> dict:
     require(isinstance(item, dict), "candidate must be an object")
     case = item.get("case")
     require(isinstance(case, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", case)
@@ -77,10 +77,13 @@ def candidate(item: dict, base: Path, scope: str = "all-layers") -> dict:
     a150 = validation.get("a150", {})
     if scope == "interface":
         # Official Q&A: the TSV ban checks only M10 and M11. See docs/rules/qa-notes-20261105.md.
-        require(a150.get("scope") == "interface-m10-m11",
-                f"{case}: validation must use the M10/M11 scope")
-        require(a150.get("interface_violations") == 0,
-                f"{case}: M10/M11 validation violations are nonzero or missing")
+        # A Guide checked under the stricter all-layers rule also satisfies this one.
+        strict_evidence = a150.get("scope") == "all-routing-layers-both-dies"
+        require(strict_evidence or a150.get("scope") == "interface-m10-m11",
+                f"{case}: validation must use the M10/M11 or all-layers scope")
+        violations = a150.get("all_layers_violations", a150.get("all_layer_violations")) if strict_evidence \
+            else a150.get("interface_violations")
+        require(violations == 0, f"{case}: validation violations are nonzero or missing")
     else:
         require(a150.get("scope") == "all-routing-layers-both-dies",
                 f"{case}: validation must cover all routing layers")
@@ -88,9 +91,10 @@ def candidate(item: dict, base: Path, scope: str = "all-layers") -> dict:
                 f"{case}: A150 validation violations are nonzero or missing")
     readback, readback_hash = checked_json(paths["readback"])
     a150 = readback.get("a150", {})
-    require(a150.get("enabled") is True and a150.get("obstacle_scope") == scope,
+    allowed = ("interface", "all-layers") if scope == "interface" else ("all-layers",)
+    require(a150.get("enabled") is True and a150.get("obstacle_scope") in allowed,
             f"{case}: readback must use A150 {scope}")
-    violations = a150.get("interface_violations") if scope == "interface" else \
+    violations = a150.get("interface_violations") if a150.get("obstacle_scope") == "interface" else \
         a150.get("all_layer_violations", a150.get("all_layers_violations"))
     require(violations == 0, f"{case}: readback A150 violations are nonzero or missing")
     require(readback.get("congestion_overflow_scale_proxy") == 1
@@ -121,7 +125,7 @@ def main() -> int:
     parser.add_argument("--selection", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--summary", required=True, type=Path)
-    parser.add_argument("--tsv-obstacle-scope", choices=("all-layers", "interface"), default="all-layers")
+    parser.add_argument("--tsv-obstacle-scope", choices=("all-layers", "interface"), default="interface")
     args = parser.parse_args()
     selection = args.selection.resolve(strict=True)
     output, summary = args.output.resolve(), args.summary.resolve()

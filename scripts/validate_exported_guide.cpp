@@ -25,7 +25,7 @@ struct Options {
     std::string def, thermal, guide, report;
     bool official_model{false}, strict_obs{true}, strict_obs_explicit{false};
     bool score_20261020{false}, a150{true}, supply_only{false},pin_floor{true};
-    TsvObstacleScope scope{TsvObstacleScope::ALL_LAYERS};
+    TsvObstacleScope scope{TsvObstacleScope::INTERFACE};
     TsvPolicyOptions tsv;
 };
 std::string quoted(const std::string& value) {

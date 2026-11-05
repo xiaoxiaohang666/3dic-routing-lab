@@ -9,9 +9,9 @@ Usage: bash scripts/run_current.sh --thermal-gain G --def FILE --lef FILE \
 Run on benchmark-host. G is required; no input-name lookup is performed.
 Public G: 001=11.684, 003=4.224, 005=8.323. Hidden-case G is unconfirmed.
 Defaults: mature A150 preset; site-20261029 objective; experimental v13 flags off.
-Later router options can change budgets/operators; the production contract is fixed,
-except EDA_TSV_OBSTACLE_SCOPE=interface, which bans TSVs only on M10/M11 PIN/OBS cells
-(official Q&A, docs/rules/qa-notes-20261105.md). The default stays all-layers.
+Later router options can change budgets/operators; the production contract is fixed.
+TSVs are banned only on cells with PIN/OBS on M10/M11 (official Q&A and returned scores,
+docs/rules/qa-notes-20261105.md). EDA_TSV_OBSTACLE_SCOPE=all-layers restores the older rule.
 This is an offline research entry, not an official submission package.
 HELP
     exit 0
@@ -24,7 +24,7 @@ if [[ "$gain_found" != 1 ]]; then
     echo 'An explicit --thermal-gain G is required; see docs/SCORING.md.' >&2
     exit 2
 fi
-scope="${EDA_TSV_OBSTACLE_SCOPE:-all-layers}"
+scope="${EDA_TSV_OBSTACLE_SCOPE:-interface}"
 if [[ "$scope" != all-layers && "$scope" != interface ]]; then
     echo "EDA_TSV_OBSTACLE_SCOPE must be all-layers or interface" >&2
     exit 2
