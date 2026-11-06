@@ -92,6 +92,10 @@ set_target_properties(eda_diagnose_reference_gap PROPERTIES RUNTIME_OUTPUT_DIREC
 add_executable(eda_diagnose_two_tree_bound scripts/diagnose_two_tree_bound.cpp)
 target_link_libraries(eda_diagnose_two_tree_bound PRIVATE eda_core)
 set_target_properties(eda_diagnose_two_tree_bound PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+# Read-only: freedom of the input pins (layers, RECT GCells) against the single official-mode access; never linked into the router.
+add_executable(eda_diagnose_pin_access scripts/diagnose_pin_access.cpp)
+target_link_libraries(eda_diagnose_pin_access PRIVATE eda_core)
+set_target_properties(eda_diagnose_pin_access PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 add_executable(eda_diagnose_tsv_attach scripts/diagnose_tsv_attach.cpp)
 target_link_libraries(eda_diagnose_tsv_attach PRIVATE eda_core)
 set_target_properties(eda_diagnose_tsv_attach PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
