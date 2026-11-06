@@ -139,6 +139,15 @@ double PearsonState::correlation_with(long double count_square, long double prod
 double PearsonState::correlation() const {
     return correlation_with(count_square_, product_);
 }
+double PearsonState::unit_move_slope() const {
+    if (heat_sum_ <= 0 || count_sum_ <= 0) return 0.0;
+    const long double n = static_cast<long double>(heat_.size());
+    const long double vh = std::max(0.0L, heat_square_ - heat_sum_ * heat_sum_ / n);
+    const long double vt = std::max(0.0L, count_square_ - count_sum_ * count_sum_ / n);
+    const long double denominator = std::sqrt(vh) * std::sqrt(vt);
+    if (denominator <= 1e-15L * heat_sum_ * count_sum_) return 0.0;
+    return static_cast<double>(1.0L / denominator);
+}
 double PearsonState::correlation_after_move(size_t from, size_t to) const {
     if (from >= counts_.size() || to >= counts_.size() || counts_[from] <= 0)
         throw std::runtime_error("invalid incremental TSV move");

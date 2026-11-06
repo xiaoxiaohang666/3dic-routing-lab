@@ -31,6 +31,13 @@ void usage(const char* p) {
         <<"--via-stack-radius N (0..3; default 0; local ordinary-via relocation during V8 RRR)\n"
         <<"--climb-escape-radius N (0..8; default 3 under --model official with the a150-20261029 rules and fast quality, otherwise 0; offer a sideways step before a via climb through full cells)\n"
         <<"--recovery-global-wirelength 0|1 (global-W recovery shortlist; default 0)\n"
+        <<"--initial-short-first 0|1 (default 0; initial routing takes same-die nets shortest pin span first)\n"
+        <<"--tsv-move-steiner N (0..4096, default 0; V7/dynamic TSV moves price a landing by its distance to each die's\n"
+        <<"    pin tree and add N slots scanned around the pins by heat value minus that length; official only)\n"
+        <<"--tsv-move-steiner-margin N (0..4096 GCells around the pins, default 16; requires --tsv-move-steiner N>0)\n"
+        <<"--layer-swap 0|1 (default 0; adaptive-schedule stage: a climbing same-die net takes its cheapest path and\n"
+        <<"  the nets filling it are rerouted; kept only if the score improves without adding wirelength)\n"
+        <<"--layer-swap-blockers N (1..16, default 4; nets rerouted with each layer swap)\n"
         <<"--v8-tsv-rematch 0|1 --v8-tsv-rematch-group-size N (2..8, default 6)\n"
         <<"--v8-tsv-rematch-nets N (1..32768, default 256) --v8-tsv-rematch-seconds N (>0..3600)\n"
         <<"--v8-tsv-dynamic 0|1 --v8-tsv-probe-candidates N (1..8, default 2)\n"
@@ -73,6 +80,8 @@ void usage(const char* p) {
         <<"--large-recovery-nets N (1..4096, default 1024) --large-recovery-rounds N (1..2, default 1)\n"
         <<"--large-recovery-seconds N (0..3600 exclusive of zero, default 300; capped by total with unified-budget 1)\n"
         <<"--large-recovery-branches N (0..8, default 8; zero disables shared branch candidates)\n"
+        <<"--recovery-rotate 0|1 (default 0; later recovery slices skip nets already attempted until\n"
+        <<"  every qualifying net had one attempt, then start a new sweep; requires large-recovery)\n"
         <<"--search astar|dijkstra  --search-limit N (per search, default 250000)\n"
         <<"--time-limit SECONDS (default 120; scales with large net count)  --local-repair 0|1 (default 1)\n"
         <<"--wirelength-rounds N (default 3)  --pin-local 0|1 (default 1)\n"
@@ -95,6 +104,9 @@ void usage(const char* p) {
         <<"--tsv-polish-candidates N (default 0: inherit tsv-candidates; max 65536)\n"
         <<"--tsv-polish-passes N (default 2; range 1..64) --tsv-polish-bidirectional 0|1 (default 0)\n"
         <<"--tsv-polish-thermal-candidates 0|1 (default 0; thermal-aware free-slot KD candidates)\n"
+        <<"--tsv-polish-score-aware 0|1 (default 0; judge polish moves by predicted single-case score change:\n"
+        <<"    exact Pearson for T, terminal MST change for W; adds thermal candidates; official model, weighted polish)\n"
+        <<"--tsv-polish-length-ratio R (default 1.4; assumed final length / FLUTE reference for the W rate, 1..10)\n"
         <<"--tsv-shared-cell-limit N (default 1; experimental multi-net same-cell TSV hubs of at most N nets, global-grid only;\n"
         <<"    TSV move/rematch phases are skipped while N>1) --tsv-shared-hot-radius R (default 0; hottest hub within R rings)\n"
         <<"--tsv-shared-auto 0|1 (default 0; choose hub size 4..32 or unique before routing from a conservative score estimate)\n"
@@ -125,12 +137,13 @@ int main(int argc,char** argv) {
         options.process_started=std::chrono::steady_clock::now();
         std::set<std::string> explicit_v8,explicit_v9;
         std::string rules_profile="a150-20261029",obstacle_scope="interface",objective_profile="documented";
+        bool explicit_steiner_margin=false;
         bool explicit_rules=false,explicit_scope=false,explicit_track_demand=false,explicit_climb_radius=false,explicit_cleanup_seconds=false,explicit_cleanup_blockers=false;
         for(int i=1;i<argc;++i) {
             std::string arg=argv[i];if(arg=="--help"||arg=="-h") {usage(argv[0]);return 0;}
             const std::set<std::string> recognized={"--def","--input-def","--lef","--lefs","--thermal-report","--thermal-json",
-                "--rules-profile","--tsv-obstacle-scope","--output","-o","--stats","--router","--rrr-rounds","--rrr-score-aware","--rrr-net-limit","--tsv-rounds","--search","--time-limit","--search-limit","--local-repair","--wirelength-rounds","--pin-local","--tsv-local","--tsv-resource-mode","--tsv-candidates","--tsv-max-candidates","--cell-pin-access","--fast-initial","--fast-quality","--fast-layer-pruning","--model","--official-runtime","--thermal-gain","--official-score-pricing","--nonpreferred","--tsv-assignment-polish","--tsv-polish-heat-weight","--tsv-polish-thermal","--tsv-polish-candidates","--tsv-polish-passes","--tsv-polish-bidirectional","--tsv-polish-thermal-candidates","--tsv-shared-cell-limit","--tsv-shared-hot-radius","--tsv-shared-auto","--thermal-gain-estimate","--congestion-target-q","--fixed-resource-model"};
-            const std::set<std::string> recovery_options={"--large-recovery","--large-recovery-nets","--large-recovery-rounds","--large-recovery-seconds","--large-recovery-branches"};
+                "--rules-profile","--tsv-obstacle-scope","--output","-o","--stats","--router","--rrr-rounds","--rrr-score-aware","--rrr-net-limit","--tsv-rounds","--search","--time-limit","--search-limit","--local-repair","--wirelength-rounds","--pin-local","--tsv-local","--tsv-resource-mode","--tsv-candidates","--tsv-max-candidates","--cell-pin-access","--fast-initial","--fast-quality","--fast-layer-pruning","--model","--official-runtime","--thermal-gain","--official-score-pricing","--nonpreferred","--tsv-assignment-polish","--tsv-polish-heat-weight","--tsv-polish-thermal","--tsv-polish-candidates","--tsv-polish-passes","--tsv-polish-bidirectional","--tsv-polish-thermal-candidates","--tsv-polish-score-aware","--tsv-polish-length-ratio","--tsv-shared-cell-limit","--tsv-shared-hot-radius","--tsv-shared-auto","--thermal-gain-estimate","--congestion-target-q","--fixed-resource-model"};
+            const std::set<std::string> recovery_options={"--large-recovery","--large-recovery-nets","--large-recovery-rounds","--large-recovery-seconds","--large-recovery-branches","--recovery-rotate"};
             const std::set<std::string> v5_options={"--tsv-block-refine","--tsv-block-size","--tsv-block-passes","--tsv-block-max-groups","--tsv-block-max-evals","--tsv-block-seconds","--v5-pin-rooted","--v5-topology-max-pins"};
             const std::set<std::string> v7_options={"--v7-topology","--v7-rrr","--v7-rrr-net-limit","--v7-rrr-astar-net-limit","--v7-rrr-astar-expansions","--v7-rrr-astar-seconds","--v7-cell-cost","--resource-profile","--v7-tsv","--v7-tsv-nets","--v7-tsv-candidates","--v7-tsv-seconds"};
             const std::set<std::string> v8_options={"--v8-rrr","--v8-rrr-group-size","--v8-tsv-rematch","--v8-tsv-rematch-group-size","--v8-tsv-rematch-nets","--v8-tsv-rematch-seconds","--v8-tsv-dynamic","--v8-tsv-probe-candidates","--v8-recovery","--unified-budget","--congestion-price-cap","--score-unit-cost"};
@@ -139,12 +152,27 @@ int main(int argc,char** argv) {
                 "--future-tsv-reservation","--resource-local-rrr","--joint-layer-recovery","--resource-candidate-pool","--thermal-coverage","--tsv-index-reuse","--checkpoint-reuse","--checkpoint-amortization"};
             const std::set<std::string> low_layer_options={"--low-layer-mask","--low-layer-seconds","--low-layer-max-attempts","--rrr-reserved-seconds"};
             const std::set<std::string> tree_move_options={"--tsv-tree-move","--tsv-tree-move-seconds","--tsv-tree-move-expansions"};
-            if(arg!="--recovery-global-wirelength"&&arg!="--via-stack-radius"&&arg!="--climb-escape-radius"&&arg!="--hotspot-cell-limit"&&arg!="--overflow-cleanup-seconds"&&arg!="--overflow-cleanup-rounds"&&arg!="--overflow-cleanup-blockers"&&arg!="--overflow-cleanup-group"&&arg!="--wirelength-polish-seconds"&&arg!="--wirelength-polish-rounds"&&arg!="--initial-maze-expansions"&&arg!="--initial-maze-seconds"&&arg!="--objective-profile"&&!tree_move_options.count(arg)&&!low_layer_options.count(arg)&&!landing_options.count(arg)&&!v9_options.count(arg)&&!v8_options.count(arg)&&!recognized.count(arg)&&!recovery_options.count(arg)&&!v5_options.count(arg)&&!v7_options.count(arg)&&arg!="--score-profile") throw std::runtime_error("unknown option: "+arg);
+            if(arg!="--recovery-global-wirelength"&&arg!="--initial-short-first"&&arg!="--tsv-move-steiner"&&arg!="--tsv-move-steiner-margin"&&arg!="--layer-swap"&&arg!="--layer-swap-blockers"&&arg!="--via-stack-radius"&&arg!="--climb-escape-radius"&&arg!="--hotspot-cell-limit"&&arg!="--overflow-cleanup-seconds"&&arg!="--overflow-cleanup-rounds"&&arg!="--overflow-cleanup-blockers"&&arg!="--overflow-cleanup-group"&&arg!="--wirelength-polish-seconds"&&arg!="--wirelength-polish-rounds"&&arg!="--initial-maze-expansions"&&arg!="--initial-maze-seconds"&&arg!="--objective-profile"&&!tree_move_options.count(arg)&&!low_layer_options.count(arg)&&!landing_options.count(arg)&&!v9_options.count(arg)&&!v8_options.count(arg)&&!recognized.count(arg)&&!recovery_options.count(arg)&&!v5_options.count(arg)&&!v7_options.count(arg)&&arg!="--score-profile") throw std::runtime_error("unknown option: "+arg);
             if(i+1>=argc) throw std::runtime_error("missing option value: "+arg);
             const std::string value=argv[++i];if(value.empty()||value[0]=='-') throw std::runtime_error("invalid option value: "+arg);
             if(arg=="--recovery-global-wirelength") {
                 const int enabled=integer(value);if(enabled>1)throw std::runtime_error("global wirelength recovery must be 0 or 1");
                 options.recovery_global_wirelength=enabled;
+            } else if(arg=="--initial-short-first") {
+                const int enabled=integer(value);if(enabled>1)throw std::runtime_error("initial-short-first must be 0 or 1");
+                options.initial_short_first=enabled;
+            } else if(arg=="--tsv-move-steiner") {
+                const int n=integer(value);if(n>4096)throw std::runtime_error("tsv-move-steiner must be 0..4096");
+                options.tsv_move_steiner=size_t(n);
+            } else if(arg=="--tsv-move-steiner-margin") {
+                const int n=integer(value);if(n>4096)throw std::runtime_error("tsv-move-steiner-margin must be 0..4096");
+                options.tsv_move_steiner_margin=n;explicit_steiner_margin=true;
+            } else if(arg=="--layer-swap") {
+                const int enabled=integer(value);if(enabled>1)throw std::runtime_error("layer-swap must be 0 or 1");
+                options.layer_swap=enabled;
+            } else if(arg=="--layer-swap-blockers") {
+                const int blockers=integer(value,true);if(blockers>16)throw std::runtime_error("layer-swap-blockers out of range");
+                options.layer_swap_blockers=size_t(blockers);
             } else if(arg=="--via-stack-radius") {
                 const int radius=integer(value);if(radius>3) throw std::runtime_error("via stack radius out of range");
                 options.via_stack_radius=radius;
@@ -389,6 +417,7 @@ int main(int argc,char** argv) {
                 } else {
                     const int v=integer(value);
                     if(arg=="--large-recovery") {if(v>1) throw std::runtime_error("large-recovery must be 0 or 1");options.large_recovery=v;}
+                    else if(arg=="--recovery-rotate") {if(v>1) throw std::runtime_error("recovery-rotate must be 0 or 1");options.recovery_rotate=v;}
                     else {
                         explicit_recovery_budget=true;
                         if(arg=="--large-recovery-nets") {if(v<1||v>4096) throw std::runtime_error("large-recovery-nets must be 1..4096");options.large_recovery_nets=size_t(v);}
@@ -458,6 +487,16 @@ int main(int argc,char** argv) {
                 explicit_polish_budget=true;const int v=integer(value);
                 if(v>1) throw std::runtime_error("tsv-polish-thermal-candidates must be 0 or 1");
                 options.tsv_policy.polish_thermal_candidates=v;
+            }
+            else if(arg=="--tsv-polish-score-aware") {
+                const int v=integer(value);
+                if(v>1) throw std::runtime_error("tsv-polish-score-aware must be 0 or 1");
+                options.tsv_policy.polish_score_aware=v;
+            }
+            else if(arg=="--tsv-polish-length-ratio") {
+                size_t end=0;const double v=std::stod(value,&end);
+                if(end!=value.size()||!std::isfinite(v)||v<1||v>10) throw std::runtime_error("tsv-polish-length-ratio must be 1..10");
+                options.tsv_policy.polish_length_ratio=v;
             }
             else if(arg=="--tsv-candidates") options.tsv_policy.nearest_candidates=size_t(integer(value,true));
             else if(arg=="--tsv-max-candidates") options.tsv_policy.max_candidates=size_t(integer(value,true));
@@ -593,6 +632,11 @@ int main(int argc,char** argv) {
         if(options.hotspot_cell_limit && !options.v8_rrr) throw std::runtime_error("hotspot cell limit requires --v8-rrr 1");
         if(options.via_stack_radius && !options.v8_rrr) throw std::runtime_error("via stack radius requires --v8-rrr 1");
         if(options.recovery_global_wirelength && !options.large_recovery) throw std::runtime_error("global wirelength recovery requires --large-recovery 1");
+        if(options.recovery_rotate && !options.large_recovery) throw std::runtime_error("recovery rotation requires --large-recovery 1");
+        if(options.tsv_move_steiner && !options.official_model) throw std::runtime_error("--tsv-move-steiner requires --model official");
+        if(explicit_steiner_margin && !options.tsv_move_steiner) throw std::runtime_error("--tsv-move-steiner-margin requires --tsv-move-steiner N>0");
+        if(options.layer_swap && (!options.official_model || !options.v9_adaptive_budget))
+            throw std::runtime_error("layer swap requires --model official and --v9-adaptive-budget 1");
         if((options.v8_tsv_rematch||options.v8_tsv_dynamic)&&options.tsv_policy.resource_mode!=eda::TsvResourceMode::GLOBAL_GRID)
             throw std::runtime_error("v8 TSV requires --tsv-resource-mode global-grid");
         if(options.v8_tsv_dynamic&&!options.v7_tsv) throw std::runtime_error("dynamic TSV requires --v7-tsv 1");
@@ -627,6 +671,9 @@ int main(int argc,char** argv) {
             throw std::runtime_error("--tsv-polish-heat-weight requires weighted thermal rule");
         if(options.tsv_policy.polish_thermal_candidates && options.tsv_policy.polish_thermal_pareto)
             throw std::runtime_error("thermal candidates require weighted thermal rule");
+        if(options.tsv_policy.polish_score_aware && (options.tsv_policy.polish_thermal_pareto ||
+           !options.tsv_policy.assignment_polish || !options.official_model))
+            throw std::runtime_error("--tsv-polish-score-aware requires --model official, --tsv-assignment-polish 1 and weighted thermal rule");
         if(options.rrr_score_aware && !options.official_model)
             throw std::runtime_error("score-aware RRR requires --model official");
         if(options.official_score_pricing && !options.official_model)

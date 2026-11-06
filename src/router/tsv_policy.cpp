@@ -151,6 +151,39 @@ double terminal_mst(const Net& net, const SlotCandidate& slot, bool top, double 
     return total;
 }
 
+// Bounding boxes of the rectilinear MST edges of one die's pins, and the
+// Manhattan distance from a point to the nearest of them (to the single pin
+// when there is one, zero when there is none). A route of that edge passes
+// inside its box, so this is the length a Steiner tree needs to reach the point.
+std::vector<std::array<double,4>> pin_mst_boxes(const std::vector<Point>& pins) {
+    std::vector<std::array<double,4>> boxes;const size_t n=pins.size();if (n<2) return boxes;
+    std::vector<double> dist(n,std::numeric_limits<double>::infinity());std::vector<int> from(n,-1);
+    std::vector<bool> used(n,false);dist[0]=0;
+    for (size_t k=0;k<n;++k) {
+        int u=-1;for (size_t j=0;j<n;++j) if (!used[j]&&(u<0||dist[j]<dist[size_t(u)])) u=int(j);
+        used[size_t(u)]=true;
+        if (from[size_t(u)]>=0) {
+            const auto& a=pins[size_t(u)];const auto& b=pins[size_t(from[size_t(u)])];
+            boxes.push_back({std::min(a.x,b.x),std::min(a.y,b.y),std::max(a.x,b.x),std::max(a.y,b.y)});
+        }
+        for (size_t v=0;v<n;++v) if (!used[v]) {
+            const double d=pins[size_t(u)].distance_to(pins[v]);
+            if (d<dist[v]) {dist[v]=d;from[v]=u;}
+        }
+    }
+    return boxes;
+}
+double pin_tree_distance(const std::vector<Point>& pins,const std::vector<std::array<double,4>>& boxes,Point p) {
+    if (pins.empty()) return 0;
+    if (boxes.empty()) return pins.front().distance_to(p);
+    double best=std::numeric_limits<double>::infinity();
+    for (const auto& b:boxes) {
+        const double dx=p.x<b[0]?b[0]-p.x:(p.x>b[2]?p.x-b[2]:0),dy=p.y<b[1]?b[1]-p.y:(p.y>b[3]?p.y-b[3]:0);
+        best=std::min(best,dx+dy);if (best==0) break;
+    }
+    return best;
+}
+
 // Balanced spatial index. Query results are exact Manhattan nearest resources;
 // the limited pool and subsequent preference matching are engineering heuristics.
 class SlotPointIndex {
@@ -410,6 +443,10 @@ void TsvPolicy::preflight(const DefParser& def,const LefParser& lef,TsvPolicyOpt
         throw std::runtime_error("Pearson Pareto thermal rule requires assignment polish");
     if (options.polish_thermal_candidates && (!options.assignment_polish || options.polish_thermal_pareto))
         throw std::runtime_error("thermal TSV candidates require weighted assignment polish");
+    if (options.polish_score_aware && (!options.assignment_polish || options.polish_thermal_pareto))
+        throw std::runtime_error("score-aware TSV polish requires weighted assignment polish");
+    if (!std::isfinite(options.polish_length_ratio) || options.polish_length_ratio<1 || options.polish_length_ratio>10)
+        throw std::runtime_error("invalid TSV polish length ratio: require finite 1..10");
     if (!std::isfinite(options.polish_heat_weight) || options.polish_heat_weight<0 || options.polish_heat_weight>1000000)
         throw std::runtime_error("invalid TSV polish heat weight: require finite 0..1000000");
     if (options.polish_candidates>65536 || !options.polish_passes || options.polish_passes>64)
@@ -915,6 +952,7 @@ std::vector<int> TsvPolicy::assign_projected(const std::vector<Net>& nets,const 
             assignment_polish_thermal_queries_=assignment_polish_thermal_candidates_=0;
             assignment_polish_cost_reduction_=0;
             assignment_polish_correlation_before_=assignment_polish_correlation_after_=0;
+            assignment_polish_predicted_score_gain_=assignment_polish_heat_weight_dbu_=0;
             if (options_.assignment_polish && std::chrono::steady_clock::now()<assignment_deadline_) {
                 // Feasibility comes first. Preserve actual reservations and
                 // fixed pins. Weighted mode retains the legacy proxy; Pareto
@@ -936,13 +974,32 @@ std::vector<int> TsvPolicy::assign_projected(const std::vector<Net>& nets,const 
                 for (int id:chosen) ++counts[slot_cells[id]];
                 PearsonState pearson(std::move(full_heat),std::move(counts));
                 assignment_polish_correlation_before_=pearson.correlation();
+                // Score-aware mode prices everything in units of 1e-12 S.
+                // W=100*R/L, so dS/dL=45/(r^2 R) at the assumed ratio r=L/R;
+                // terminal MST changes stand in for routed length changes.
+                const bool score_aware=options_.polish_score_aware;
+                if (score_aware && (!(score_reference_dbu_>0) || !(score_thermal_gain_>0)))
+                    throw std::logic_error("score-aware TSV polish needs a positive reference and thermal gain");
+                constexpr double score_unit=1e12;
+                const double ratio=options_.polish_length_ratio;
+                const double score_per_dbu=score_aware?45.0/(ratio*ratio*score_reference_dbu_):0.0;
+                auto thermal_score=[&](double rho) {return 50.0*(1.0+std::tanh(score_thermal_gain_*rho));};
+                // Wire-length equivalent of the whole normalized heat range for
+                // one TSV move at the current correlation (thermal candidate query).
+                auto score_heat_weight_dbu=[&]() {
+                    const double t=std::tanh(score_thermal_gain_*pearson.correlation());
+                    const double slope=0.25*50.0*score_thermal_gain_*(1-t*t)*pearson.unit_move_slope();
+                    return std::max(0.0,slope*(maxheat-minheat)/score_per_dbu);
+                };
+                const bool thermal_candidates=options_.polish_thermal_candidates || score_aware;
+                if (score_aware) assignment_polish_heat_weight_dbu_=score_heat_weight_dbu();
                 std::vector<double> normalized_heat;
-                if (options_.polish_thermal_candidates) {
+                if (thermal_candidates) {
                     normalized_heat.resize(slots_.size());
                     if (maxheat>minheat) for (size_t id=0;id<slots_.size();++id) if (enabled_[id])
                         normalized_heat[id]=(heat[id]-minheat)/(maxheat-minheat);
                 }
-                SlotPointIndex free_index(slots_,enabled_,options_.polish_thermal_candidates?&normalized_heat:nullptr);
+                SlotPointIndex free_index(slots_,enabled_,thermal_candidates?&normalized_heat:nullptr);
                 std::vector<int> owners(slots_.size(),-1);
                 for (size_t n=0;n<chosen.size();++n) {
                     if (owners[chosen[n]]>=0) throw std::logic_error("duplicate assigned TSV resource");
@@ -955,6 +1012,8 @@ std::vector<int> TsvPolicy::assign_projected(const std::vector<Net>& nets,const 
                     const double h=maxheat>minheat?(heat[id]-minheat)/(maxheat-minheat):0.0;
                     const double risk=0.5/std::max(1.0,graph_.guide_capacity(slot.lower_node))+
                         0.5/std::max(1.0,graph_.guide_capacity(slot.upper_node));
+                    // Score-aware: wire part only; heat enters through the exact Pearson update.
+                    if (score_aware) return std::llround(score_unit*score_per_dbu*(mst+2*risk*ell0));
                     return std::llround(scale*(mst/ell0+2*risk+(options_.polish_thermal_pareto?0.0:options_.polish_heat_weight*(1-h))));
                 };
                 std::vector<long long> costs(chosen.size());
@@ -986,10 +1045,11 @@ std::vector<int> TsvPolicy::assign_projected(const std::vector<Net>& nets,const 
                         const double current_correlation=pearson.correlation();
                         double best_correlation=current_correlation;
                         auto free_slots=free_index.nearest(anchors[n],polish_budget);
-                        if (options_.polish_thermal_candidates) {
+                        if (thermal_candidates) {
                             ++assignment_polish_thermal_queries_;
                             auto spatial_slots=free_slots;std::sort(spatial_slots.begin(),spatial_slots.end());
-                            for (int id:free_index.nearest_thermal(anchors[n],polish_budget,ell0*options_.polish_heat_weight))
+                            const double heat_weight_dbu=score_aware?score_heat_weight_dbu():ell0*options_.polish_heat_weight;
+                            for (int id:free_index.nearest_thermal(anchors[n],polish_budget,heat_weight_dbu))
                                 if (!std::binary_search(spatial_slots.begin(),spatial_slots.end(),id)) {
                                     free_slots.push_back(id);++assignment_polish_thermal_candidates_;
                                 }
@@ -999,8 +1059,13 @@ std::vector<int> TsvPolicy::assign_projected(const std::vector<Net>& nets,const 
                             bool conflict=false;
                             for (int c:slots_[id].conflicts) if (owners[c]>=0 && owners[c]!=int(n)) {conflict=true;break;}
                             if (conflict) continue;
-                            const auto trial=cost(n,id),gain=costs[n]-trial;
-                            if (options_.polish_thermal_pareto) {
+                            const auto trial=cost(n,id);
+                            auto gain=costs[n]-trial;
+                            if (score_aware) {
+                                const double after=pearson.correlation_after_move(slot_cells[old],slot_cells[id]);
+                                gain+=std::llround(score_unit*0.25*(thermal_score(after)-thermal_score(current_correlation)));
+                                if (gain>reduction) {best=id;other=-1;reduction=gain;new_cost=trial;}
+                            } else if (options_.polish_thermal_pareto) {
                                 const double after=pearson.correlation_after_move(slot_cells[old],slot_cells[id]);
                                 if (gain<0 || after<current_correlation || (gain==0 && after<=current_correlation)) continue;
                                 if (gain>reduction || (gain==reduction && after>best_correlation)) {
@@ -1036,6 +1101,7 @@ std::vector<int> TsvPolicy::assign_projected(const std::vector<Net>& nets,const 
                             chosen[other]=old;owners[old]=other;costs[other]=other_cost;++assignment_polish_swaps_;
                         }
                         assignment_polish_cost_reduction_+=reduction;improved=true;
+                        if (score_aware) assignment_polish_predicted_score_gain_+=static_cast<double>(reduction)/score_unit;
                     }
                     if (!improved) break;
                 }
@@ -1352,7 +1418,7 @@ struct TsvMoveSearch::Impl {
     const DefParser& def;
     const RoutingGraph& graph;
     const TsvPolicy& policy;
-    std::vector<int> assignment, owner, slot_cells;
+    std::vector<int> assignment, owner, slot_cells, cell_slot;
     std::vector<double> normalized_heat;
     std::unique_ptr<PearsonState> pearson;
     std::unique_ptr<SlotPointIndex> free_index;
@@ -1379,12 +1445,13 @@ struct TsvMoveSearch::Impl {
             heat[size_t(row)*grid.cols+col]=h;sum+=h;square+=static_cast<long double>(h)*h;
             minimum=std::min(minimum,h);maximum=std::max(maximum,h);
         }
-        const auto& slots=policy.slots();
+        const auto& slots=policy.slots();cell_slot.assign(cells,-1);
         for (size_t id=0;id<slots.size();++id) {
             const int col=grid.get_col(slots[id].point.x),row=grid.get_row(slots[id].point.y);
             if (col<0||row<0||col>=grid.cols||row>=grid.rows)
                 throw std::logic_error("TSV move slot outside thermal grid");
             slot_cells[id]=row*grid.cols+col;
+            if (cell_slot[size_t(slot_cells[id])]<0) cell_slot[size_t(slot_cells[id])]=int(id);
             normalized_heat[id]=maximum>minimum?(heat[size_t(slot_cells[id])]-minimum)/(maximum-minimum):0;
         }
         size_t occupied=0;
@@ -1430,7 +1497,8 @@ int TsvMoveSearch::current_slot(size_t net_index) const {return impl_->assignmen
 
 std::vector<TsvMoveCandidate> TsvMoveSearch::candidates(size_t net_index,const TsvMoveSearchOptions& o) const {
     if (o.max_candidates>4096 || !std::isfinite(o.length_price)||o.length_price<0 ||
-        !std::isfinite(o.thermal_gain)||o.thermal_gain<0 || !std::isfinite(o.risk_price)||o.risk_price<0)
+        !std::isfinite(o.thermal_gain)||o.thermal_gain<0 || !std::isfinite(o.risk_price)||o.risk_price<0 ||
+        o.steiner_scan>4096 || o.steiner_cells<1 || o.steiner_cells>1048576 || o.steiner_margin<0 || o.steiner_margin>4096)
         throw std::invalid_argument("invalid TSV move proposal budget or score price");
     const auto& state=*impl_;const auto& net=state.def.nets().at(net_index);
     const int old=state.assignment.at(net_index);
@@ -1495,8 +1563,39 @@ std::vector<TsvMoveCandidate> TsvMoveSearch::candidates(size_t net_index,const T
             pool.insert(ids.begin(),ids.end());
         }
     }
+    std::array<std::vector<Point>,2> side_pins;std::array<std::vector<std::array<double,4>>,2> side_boxes;
+    if (o.steiner_length||o.steiner_scan) {
+        for (const auto& pin:net.pins) side_pins[pin.layer_idx>=11].push_back(pin.coord);
+        for (int s=0;s<2;++s) side_boxes[size_t(s)]=pin_mst_boxes(side_pins[size_t(s)]);
+    }
+    const auto tree_length=[&](Point p) {
+        return pin_tree_distance(side_pins[0],side_boxes[0],p)+pin_tree_distance(side_pins[1],side_boxes[1],p);
+    };
+    if (o.steiner_scan) {
+        const auto& grid=state.graph.grid();
+        double x1=std::numeric_limits<double>::infinity(),y1=x1,x2=-x1,y2=-x1;
+        for (const auto& pin:net.pins) {x1=std::min(x1,pin.coord.x);y1=std::min(y1,pin.coord.y);x2=std::max(x2,pin.coord.x);y2=std::max(y2,pin.coord.y);}
+        const auto col=[&](double x){return std::clamp(grid.get_col(std::clamp(x,grid.x_lines.front(),grid.x_lines.back())),0,grid.cols-1);};
+        const auto row=[&](double y){return std::clamp(grid.get_row(std::clamp(y,grid.y_lines.front(),grid.y_lines.back())),0,grid.rows-1);};
+        const int c1=std::max(0,col(x1)-o.steiner_margin),c2=std::min(grid.cols-1,col(x2)+o.steiner_margin);
+        const int r1=std::max(0,row(y1)-o.steiner_margin),r2=std::min(grid.rows-1,row(y2)+o.steiner_margin);
+        const double area=double(c2-c1+1)*double(r2-r1+1);
+        const int stride=std::max(1,int(std::ceil(std::sqrt(area/double(o.steiner_cells)))));
+        std::vector<std::pair<double,int>> ranked;
+        for (int r=r1;r<=r2;r+=stride) for (int c=c1;c<=c2;c+=stride) {
+            const int id=state.cell_slot[size_t(r)*grid.cols+c];
+            if (id<0||id==old||state.owner[size_t(id)]!=-1||!state.policy.compatible(net,id)) continue;
+            ranked.emplace_back(heat_price*state.normalized_heat[size_t(id)]-o.length_price*tree_length(slots[size_t(id)].point),id);
+        }
+        const size_t keep=std::min(o.steiner_scan,ranked.size());
+        std::partial_sort(ranked.begin(),ranked.begin()+std::ptrdiff_t(keep),ranked.end(),[](const auto& a,const auto& b) {
+            return a.first!=b.first?a.first>b.first:a.second<b.second;
+        });
+        for (size_t k=0;k<keep;++k) pool.insert(ranked[k].second);
+    }
     const double via_penalty=0.2*state.graph.ell0();
     const auto length=[&](int id) {
+        if (o.steiner_length) return tree_length(slots[size_t(id)].point);
         return terminal_mst(net,slots[size_t(id)],false,via_penalty)+terminal_mst(net,slots[size_t(id)],true,via_penalty);
     };
     const double old_length=length(old),old_risk=state.risk(old);

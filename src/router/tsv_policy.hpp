@@ -25,6 +25,15 @@ struct TsvPolicyOptions {
     size_t polish_passes{2};
     bool polish_bidirectional{false};
     bool polish_thermal_candidates{false};
+    // Opt-in: judge each weighted polish move by its predicted change of the
+    // single-case score S=0.45W+0.30C+0.25T instead of a fixed heat weight.
+    // T uses the exact Pearson update and the router's thermal gain; W uses
+    // the change of both dies' terminal MST at an assumed final length of
+    // polish_length_ratio x the FLUTE reference (an engineering prior, since
+    // nothing is routed yet). Thermal-aware candidates are added with the same
+    // exchange rate. Needs TsvPolicy::set_score_calibration().
+    bool polish_score_aware{false};
+    double polish_length_ratio{1.4};
     // V5: bounded exact rematching of small groups of occupied reservations.
     // This never changes the occupied-slot set or its thermal distribution.
     bool assignment_block_refine{false};
@@ -102,8 +111,15 @@ public:
     size_t obstacle_rejected_cells() const { return obstacle_rejected_cells_; }
     const char* assignment_polish_thermal_mode() const {
         if (!projected_ || !options_.assignment_polish) return "not-applied";
-        return options_.polish_thermal_pareto ? "pearson-pareto" : "weighted-proxy";
+        return options_.polish_thermal_pareto ? "pearson-pareto" :
+            options_.polish_score_aware ? "score-aware" : "weighted-proxy";
     }
+    // Total FLUTE reference and thermal gain for score-aware polish.
+    void set_score_calibration(double reference_dbu, double thermal_gain) {
+        score_reference_dbu_=reference_dbu; score_thermal_gain_=thermal_gain;
+    }
+    double assignment_polish_predicted_score_gain() const { return assignment_polish_predicted_score_gain_; }
+    double assignment_polish_heat_weight_dbu() const { return assignment_polish_heat_weight_dbu_; }
     double assignment_polish_correlation_before() const { return assignment_polish_correlation_before_; }
     double assignment_polish_correlation_after() const { return assignment_polish_correlation_after_; }
     size_t assignment_polish_moves() const { return assignment_polish_moves_; }
@@ -148,6 +164,8 @@ private:
     mutable size_t assignment_polish_moves_{0}, assignment_polish_swaps_{0};
     mutable size_t assignment_polish_passes_{0};
     mutable size_t assignment_polish_thermal_queries_{0}, assignment_polish_thermal_candidates_{0};
+    double score_reference_dbu_{0}, score_thermal_gain_{0};
+    mutable double assignment_polish_predicted_score_gain_{0}, assignment_polish_heat_weight_dbu_{0};
     mutable long long assignment_polish_cost_reduction_{0};
     mutable double assignment_polish_correlation_before_{0}, assignment_polish_correlation_after_{0};
     mutable size_t assignment_block_groups_{0}, assignment_block_improvements_{0};
@@ -183,6 +201,16 @@ struct TsvMoveSearchOptions {
     size_t max_candidates{16}, max_pins{128};
     double length_price{0.0}; // Positive weighted-quality cost per DBU.
     double thermal_gain{20.0}, risk_price{0.0};
+    // Opt-in Steiner-style length proxy. steiner_length prices a landing by its
+    // distance to the nearest edge bounding box of each die's pin MST instead of
+    // a terminal MST through the pins, so a landing beside the middle of a long
+    // tree edge is not charged a detour to the nearest pin. steiner_scan adds up
+    // to that many free compatible slots from a window of steiner_margin GCells
+    // around the pins (at most steiner_cells scanned, evenly strided), ranked by
+    // heat value minus that length. Both off keeps the historical proposals.
+    bool steiner_length{false};
+    size_t steiner_scan{0}, steiner_cells{16384};
+    int steiner_margin{16};
 };
 struct TsvMoveCandidate {
     int slot{-1};

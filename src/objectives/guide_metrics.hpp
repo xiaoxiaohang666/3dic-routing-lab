@@ -54,6 +54,10 @@ public:
     double correlation() const;
     // Read-only O(1) prediction; preserves the same source/index checks as move().
     double correlation_after_move(size_t from, size_t to) const;
+    // Exact correlation change per unit heat difference when one TSV moves
+    // from a cell holding one TSV to an empty cell (the count variance is
+    // unchanged by such a move). Zero when the correlation is undefined.
+    double unit_move_slope() const;
     void move(int from, int to);
     const std::vector<int>& counts() const { return counts_; }
 private:
