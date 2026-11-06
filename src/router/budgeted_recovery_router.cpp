@@ -20,6 +20,10 @@ CompleteMetrics NegotiatedRouter::recovery_metrics(const CompleteMetrics& invari
 }
 
 std::vector<size_t> NegotiatedRouter::recovery_selection() const {
+    // Rotation: nets attempted earlier in the current sweep wait until every
+    // other qualifying net has had its attempt (the caller starts a new sweep).
+    const bool rotate=options_.recovery_rotate && recovery_tried_.size()==routes_.size();
+    const auto skip=[&](size_t i){return rotate && recovery_tried_[i]!=0;};
     if(options_.recovery_global_wirelength) {
         // W is a function of aggregate L/R, not a sum of per-net scores. A
         // net below its own reference can still improve aggregate W. TSV
@@ -31,7 +35,7 @@ std::vector<size_t> NegotiatedRouter::recovery_selection() const {
         const double current_w=reference>0?official_wirelength_score(length,reference,options_.official_metrics):0;
         for(size_t i=0;i<routes_.size();++i) {
             const auto& m=routes_[i].measured;
-            if(m.wirelength<=0) continue;
+            if(m.wirelength<=0 || skip(i)) continue;
             const double removable=std::max(0.0,m.wirelength-m.tsv_wirelength);
             const double gain=reference>0 && length>reference ?
                 .45*(official_wirelength_score(std::max(reference,length-removable),reference,
@@ -53,6 +57,7 @@ std::vector<size_t> NegotiatedRouter::recovery_selection() const {
     std::vector<size_t> positive,zero;
     for(size_t i=0;i<routes_.size();++i) {
         const auto& m=routes_[i].measured;
+        if(skip(i)) continue;
         if(m.reference>0) {if(m.wirelength>m.reference) positive.push_back(i);}
         else if(m.wirelength>0) zero.push_back(i);
     }
@@ -637,9 +642,17 @@ void NegotiatedRouter::recover_budgeted_wirelength() {
     CompleteMetrics checkpoint=best_metrics_;std::vector<std::pair<size_t,NetRoute>> journal;
     bool valid=true;
     for(int pass=0;pass<options_.large_recovery_rounds&&valid&&!timed_out();++pass) {
-        const auto selected=recovery_selection();recovery_stats_.selected+=selected.size();
+        if(options_.recovery_rotate && recovery_tried_.size()!=routes_.size()) recovery_tried_.assign(routes_.size(),0);
+        auto selected=recovery_selection();
+        if(options_.recovery_rotate && selected.empty()) {
+            // Every qualifying net has been attempted once: begin a new sweep.
+            std::fill(recovery_tried_.begin(),recovery_tried_.end(),uint8_t{0});
+            ++recovery_rotation_sweeps_;selected=recovery_selection();
+        }
+        recovery_stats_.selected+=selected.size();
         for(size_t index:selected) {
             if(timed_out()) break;
+            if(options_.recovery_rotate && !recovery_tried_[index]) {recovery_tried_[index]=1;++recovery_distinct_attempted_;}
             ++recovery_stats_.attempted;recovery_stats_.zero_reference+=routes_[index].measured.reference==0;
             const auto old=routes_[index];
             if(recovery_transaction(index,[&](const auto& route,const auto& base){return recovery_candidates(index,route,base);})) {

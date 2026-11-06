@@ -410,6 +410,10 @@ void TsvPolicy::preflight(const DefParser& def,const LefParser& lef,TsvPolicyOpt
         throw std::runtime_error("Pearson Pareto thermal rule requires assignment polish");
     if (options.polish_thermal_candidates && (!options.assignment_polish || options.polish_thermal_pareto))
         throw std::runtime_error("thermal TSV candidates require weighted assignment polish");
+    if (options.polish_score_aware && (!options.assignment_polish || options.polish_thermal_pareto))
+        throw std::runtime_error("score-aware TSV polish requires weighted assignment polish");
+    if (!std::isfinite(options.polish_length_ratio) || options.polish_length_ratio<1 || options.polish_length_ratio>10)
+        throw std::runtime_error("invalid TSV polish length ratio: require finite 1..10");
     if (!std::isfinite(options.polish_heat_weight) || options.polish_heat_weight<0 || options.polish_heat_weight>1000000)
         throw std::runtime_error("invalid TSV polish heat weight: require finite 0..1000000");
     if (options.polish_candidates>65536 || !options.polish_passes || options.polish_passes>64)
@@ -915,6 +919,7 @@ std::vector<int> TsvPolicy::assign_projected(const std::vector<Net>& nets,const 
             assignment_polish_thermal_queries_=assignment_polish_thermal_candidates_=0;
             assignment_polish_cost_reduction_=0;
             assignment_polish_correlation_before_=assignment_polish_correlation_after_=0;
+            assignment_polish_predicted_score_gain_=assignment_polish_heat_weight_dbu_=0;
             if (options_.assignment_polish && std::chrono::steady_clock::now()<assignment_deadline_) {
                 // Feasibility comes first. Preserve actual reservations and
                 // fixed pins. Weighted mode retains the legacy proxy; Pareto
@@ -936,13 +941,32 @@ std::vector<int> TsvPolicy::assign_projected(const std::vector<Net>& nets,const 
                 for (int id:chosen) ++counts[slot_cells[id]];
                 PearsonState pearson(std::move(full_heat),std::move(counts));
                 assignment_polish_correlation_before_=pearson.correlation();
+                // Score-aware mode prices everything in units of 1e-12 S.
+                // W=100*R/L, so dS/dL=45/(r^2 R) at the assumed ratio r=L/R;
+                // terminal MST changes stand in for routed length changes.
+                const bool score_aware=options_.polish_score_aware;
+                if (score_aware && (!(score_reference_dbu_>0) || !(score_thermal_gain_>0)))
+                    throw std::logic_error("score-aware TSV polish needs a positive reference and thermal gain");
+                constexpr double score_unit=1e12;
+                const double ratio=options_.polish_length_ratio;
+                const double score_per_dbu=score_aware?45.0/(ratio*ratio*score_reference_dbu_):0.0;
+                auto thermal_score=[&](double rho) {return 50.0*(1.0+std::tanh(score_thermal_gain_*rho));};
+                // Wire-length equivalent of the whole normalized heat range for
+                // one TSV move at the current correlation (thermal candidate query).
+                auto score_heat_weight_dbu=[&]() {
+                    const double t=std::tanh(score_thermal_gain_*pearson.correlation());
+                    const double slope=0.25*50.0*score_thermal_gain_*(1-t*t)*pearson.unit_move_slope();
+                    return std::max(0.0,slope*(maxheat-minheat)/score_per_dbu);
+                };
+                const bool thermal_candidates=options_.polish_thermal_candidates || score_aware;
+                if (score_aware) assignment_polish_heat_weight_dbu_=score_heat_weight_dbu();
                 std::vector<double> normalized_heat;
-                if (options_.polish_thermal_candidates) {
+                if (thermal_candidates) {
                     normalized_heat.resize(slots_.size());
                     if (maxheat>minheat) for (size_t id=0;id<slots_.size();++id) if (enabled_[id])
                         normalized_heat[id]=(heat[id]-minheat)/(maxheat-minheat);
                 }
-                SlotPointIndex free_index(slots_,enabled_,options_.polish_thermal_candidates?&normalized_heat:nullptr);
+                SlotPointIndex free_index(slots_,enabled_,thermal_candidates?&normalized_heat:nullptr);
                 std::vector<int> owners(slots_.size(),-1);
                 for (size_t n=0;n<chosen.size();++n) {
                     if (owners[chosen[n]]>=0) throw std::logic_error("duplicate assigned TSV resource");
@@ -955,6 +979,8 @@ std::vector<int> TsvPolicy::assign_projected(const std::vector<Net>& nets,const 
                     const double h=maxheat>minheat?(heat[id]-minheat)/(maxheat-minheat):0.0;
                     const double risk=0.5/std::max(1.0,graph_.guide_capacity(slot.lower_node))+
                         0.5/std::max(1.0,graph_.guide_capacity(slot.upper_node));
+                    // Score-aware: wire part only; heat enters through the exact Pearson update.
+                    if (score_aware) return std::llround(score_unit*score_per_dbu*(mst+2*risk*ell0));
                     return std::llround(scale*(mst/ell0+2*risk+(options_.polish_thermal_pareto?0.0:options_.polish_heat_weight*(1-h))));
                 };
                 std::vector<long long> costs(chosen.size());
@@ -986,10 +1012,11 @@ std::vector<int> TsvPolicy::assign_projected(const std::vector<Net>& nets,const 
                         const double current_correlation=pearson.correlation();
                         double best_correlation=current_correlation;
                         auto free_slots=free_index.nearest(anchors[n],polish_budget);
-                        if (options_.polish_thermal_candidates) {
+                        if (thermal_candidates) {
                             ++assignment_polish_thermal_queries_;
                             auto spatial_slots=free_slots;std::sort(spatial_slots.begin(),spatial_slots.end());
-                            for (int id:free_index.nearest_thermal(anchors[n],polish_budget,ell0*options_.polish_heat_weight))
+                            const double heat_weight_dbu=score_aware?score_heat_weight_dbu():ell0*options_.polish_heat_weight;
+                            for (int id:free_index.nearest_thermal(anchors[n],polish_budget,heat_weight_dbu))
                                 if (!std::binary_search(spatial_slots.begin(),spatial_slots.end(),id)) {
                                     free_slots.push_back(id);++assignment_polish_thermal_candidates_;
                                 }
@@ -999,8 +1026,13 @@ std::vector<int> TsvPolicy::assign_projected(const std::vector<Net>& nets,const 
                             bool conflict=false;
                             for (int c:slots_[id].conflicts) if (owners[c]>=0 && owners[c]!=int(n)) {conflict=true;break;}
                             if (conflict) continue;
-                            const auto trial=cost(n,id),gain=costs[n]-trial;
-                            if (options_.polish_thermal_pareto) {
+                            const auto trial=cost(n,id);
+                            auto gain=costs[n]-trial;
+                            if (score_aware) {
+                                const double after=pearson.correlation_after_move(slot_cells[old],slot_cells[id]);
+                                gain+=std::llround(score_unit*0.25*(thermal_score(after)-thermal_score(current_correlation)));
+                                if (gain>reduction) {best=id;other=-1;reduction=gain;new_cost=trial;}
+                            } else if (options_.polish_thermal_pareto) {
                                 const double after=pearson.correlation_after_move(slot_cells[old],slot_cells[id]);
                                 if (gain<0 || after<current_correlation || (gain==0 && after<=current_correlation)) continue;
                                 if (gain>reduction || (gain==reduction && after>best_correlation)) {
@@ -1036,6 +1068,7 @@ std::vector<int> TsvPolicy::assign_projected(const std::vector<Net>& nets,const 
                             chosen[other]=old;owners[old]=other;costs[other]=other_cost;++assignment_polish_swaps_;
                         }
                         assignment_polish_cost_reduction_+=reduction;improved=true;
+                        if (score_aware) assignment_polish_predicted_score_gain_+=static_cast<double>(reduction)/score_unit;
                     }
                     if (!improved) break;
                 }

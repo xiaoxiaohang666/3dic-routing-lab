@@ -48,6 +48,10 @@ struct RouterOptions {
     // Search radius (GCells) for leaving a terminal column whose climb crosses
     // full cells. Zero keeps the existing templates only.
     int climb_escape_radius{0};
+    // Initial routing order for same-die nets: shortest pin span first, so
+    // short nets get the low layers and long nets, whose via climb costs less
+    // per unit length, take the upper layers. Cross-die nets still go first.
+    bool initial_short_first{false};
     size_t v8_tsv_rematch_group_size{6}, v8_tsv_rematch_nets{256};
     double v8_tsv_rematch_seconds{30};
     // V9 mechanisms are independent for same-binary documented-rule ablations.
@@ -85,6 +89,16 @@ struct RouterOptions {
     std::chrono::steady_clock::time_point process_started{};
     bool large_recovery{false};
     bool recovery_global_wirelength{false};
+    // Skip nets already attempted by budgeted recovery until every net that
+    // currently qualifies has had one attempt, then start a new sweep. Off
+    // keeps the historical behaviour of re-ranking from the top each slice.
+    bool recovery_rotate{false};
+    // Layer swap: a same-die net that climbs many layers takes its cheapest
+    // path, and the few nets filling that path are rerouted after it. Kept only
+    // when the complete score improves without adding wirelength. Runs as a
+    // fifth v9 schedule stage; off by default.
+    bool layer_swap{false};
+    size_t layer_swap_blockers{4};
     size_t large_recovery_nets{1024};
     int large_recovery_rounds{1}, large_recovery_branches{8};
     double large_recovery_seconds{300};
@@ -236,6 +250,11 @@ struct PathResult {
     size_t source{};
     double cost{};
 };
+struct LayerSwapStats {
+    size_t attempted{}, accepted{}, no_gain{}, no_blocker{}, rejected{}, failures{}, blockers_moved{},
+           sweeps{}, checkpoints{}, checkpoint_rollbacks{};
+    double seconds{}, delta_length{};
+};
 struct BudgetedRecoveryStats {
     size_t selected{}, zero_reference{}, attempted{}, candidates{}, shared_candidates{}, local_candidates{},
            accepted{}, rejected{}, checkpoints{}, checkpoint_rollbacks{}, candidate_failures{};
@@ -260,6 +279,8 @@ private:
     friend struct ViaStackTestAccess;
     friend struct TsvLandingRrrTestAccess;
     friend struct FutureTsvReservationTestAccess;
+    friend struct RecoveryRotationTestAccess;
+    friend struct LayerSwapTestAccess;
     friend struct V6ResourceRecoveryTestAccess;
     friend struct PinLocalTestAccess;
     friend struct V7RouterTestAccess;
@@ -370,6 +391,10 @@ private:
     bool shared_landings_active_{false};
     std::vector<int> choose_shared_landings(const std::vector<int>& unique);
     BudgetedRecoveryStats recovery_stats_;
+    std::vector<uint8_t> recovery_tried_;
+    size_t recovery_rotation_sweeps_{0},recovery_distinct_attempted_{0};
+    LayerSwapStats swap_stats_;
+    std::vector<uint8_t> swap_tried_;
     bool large_design() const { return def_.nets().size()>1000; }
     bool timed_out() const;
     double v5_topology_seconds_limit() const { return std::min(120.0,0.05*options_.time_limit); }
@@ -416,6 +441,9 @@ private:
     void rematch_tsv_ownership();
     void recover_wirelength();
     void recover_budgeted_wirelength();
+    void recover_layer_swaps();
+    std::vector<size_t> layer_swap_targets() const;
+    bool layer_swap_transaction(size_t,std::vector<std::pair<size_t,NetRoute>>&,size_t&);
     bool recovery_transaction(size_t,const std::function<std::optional<NetRoute>(const NetRoute&,const CompleteMetrics&)>&);
     bool recovery_checkpoint(std::vector<std::pair<size_t,NetRoute>>&,CompleteMetrics&);
     CompleteMetrics recovery_metrics(const CompleteMetrics&) const;

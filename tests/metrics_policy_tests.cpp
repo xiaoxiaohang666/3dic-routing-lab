@@ -46,8 +46,18 @@ void test_pearson() {
         require(state.counts()==counts,"incremental count transaction");
         require(std::abs(state.correlation()-recompute(heat,counts))<1e-12,"incremental Pearson parity");
     }
+    // The unit-move slope must reproduce every exact move of one TSV from a
+    // single-TSV cell to an empty cell (the case the score-aware polish uses).
+    PearsonState unique(heat,{1,0,1,0,0,1,0,0,1,0,0,0,0,0,1,0});
+    const std::vector<int> unique_counts{1,0,1,0,0,1,0,0,1,0,0,0,0,0,1,0};
+    for(size_t from=0;from<heat.size();++from) if(unique_counts[from]==1)
+        for(size_t to=0;to<heat.size();++to) if(unique_counts[to]==0) {
+            const double predicted=unique.correlation()+(heat[to]-heat[from])*unique.unit_move_slope();
+            require(std::abs(predicted-unique.correlation_after_move(from,to))<1e-12,"unit move slope parity");
+        }
     PearsonState flat({2,2,2},{1,0,1});
     require(flat.correlation()==0,"constant heat correlation");
+    require(flat.unit_move_slope()==0,"constant heat slope");
     PearsonState uniform({1,2,3},{1,1,1});
     require(uniform.correlation()==0,"constant TSV correlation");
     rejects([&]{PearsonState bad({1},{1,2});},"Pearson dimension mismatch");
