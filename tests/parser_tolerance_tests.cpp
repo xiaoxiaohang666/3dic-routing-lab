@@ -155,13 +155,48 @@ void test_still_rejected() {
         "NETS 1 ; - n ( u A ) ; END NETS END DESIGN";
     require(!def.parse(file("far.def", far), lef), "pin more than one GCell outside the die still rejected");
 }
+void test_layer_names() {
+    require(canonical_layer_name("Metal10") == "metal10" && canonical_layer_name("M2") == "metal2" &&
+            canonical_layer_name("metal20") == "metal20" && canonical_layer_name("met1") == "met1" &&
+            canonical_layer_name("M21") == "M21" && canonical_layer_name("M01") == "M01" &&
+            canonical_layer_name("via1") == "via1" && canonical_layer_name("MASTERSLICE") == "MASTERSLICE",
+            "only Metal<N>/M<N> spellings with N in 1..20 are mapped");
+    const std::string lef =
+        "LAYER Metal1 TYPE ROUTING ; DIRECTION HORIZONTAL ; END Metal1 "
+        "LAYER via1 TYPE CUT ; END via1 "
+        "LAYER M2 TYPE ROUTING ; DIRECTION VERTICAL ; END M2 "
+        "VIA v12 DEFAULT LAYER Metal1 ; RECT -1 -1 1 1 ; LAYER via1 ; RECT -0.5 -0.5 0.5 0.5 ; "
+        "LAYER M2 ; RECT -1 -1 1 1 ; END v12 "
+        "MACRO c CLASS CORE ; SIZE 10 BY 10 ; PIN A PORT LAYER Metal1 ; RECT 1 1 2 2 ; END END A "
+        "OBS LAYER M2 ; RECT 0 0 3 3 ; END END c END LIBRARY";
+    LefParser l;
+    require(l.parse(file("names.lef", lef)), "LEF with Metal<N>/M<N> layer names parses");
+    require(l.get_layer_direction("metal1") == Direction::HORIZONTAL &&
+            l.get_layer_direction("metal2") == Direction::VERTICAL, "routing layers stored as metalN");
+    require(l.get_via("v12")->shapes[0].layer == "metal1" && l.get_via("v12")->shapes[2].layer == "metal2",
+            "via shapes use metalN");
+    require(l.get_macro("c")->pins.at("A").layer == "metal1" && l.get_macro("c")->obstructions[0].layer == "metal2",
+            "pin and OBS shapes use metalN");
+    const std::string def =
+        "UNITS DISTANCE MICRONS 10 ; DIEAREA ( 0 0 ) ( 1000 1000 ) ; "
+        "TRACKS X 50 DO 10 STEP 100 LAYER M2 ; TRACKS Y 50 DO 10 STEP 100 LAYER Metal1 ; "
+        "GCELLGRID X 0 DO 11 STEP 100 ; GCELLGRID Y 0 DO 11 STEP 100 ; "
+        "COMPONENTS 1 ; - u c + PLACED ( 100 100 ) N ; END COMPONENTS "
+        "PINS 1 ; - io + NET n + LAYER M2 ( -1 -1 ) ( 1 1 ) + PLACED ( 500 500 ) N ; END PINS "
+        "NETS 1 ; - n ( u A ) ( PIN io ) ; END NETS END DESIGN";
+    DefParser d;
+    require(d.parse(file("names.def", def), l, DefGridMapping::OFFICIAL_FULL), "DEF with Metal<N>/M<N> names parses");
+    require(d.tracks()[0].layers[0] == "metal2" && d.tracks()[1].layers[0] == "metal1", "TRACKS layers use metalN");
+    require(d.nets()[0].pins[0].layer_idx == 1 && d.nets()[0].pins[1].layer == "metal2" &&
+            d.nets()[0].pins[1].layer_idx == 2, "pins resolve to metalN layer indices");
+}
 } // namespace
 
 int main(int argc, char** argv) {
     try {
         if (argc != 2) throw std::runtime_error("usage: parser_tolerance_tests output_directory");
         work = argv[1]; fs::create_directories(work);
-        test_polygon_to_rects(); test_lef(); test_def(); test_still_rejected();
+        test_polygon_to_rects(); test_lef(); test_def(); test_still_rejected(); test_layer_names();
         std::cout << "Parser tolerance tests passed: " << checks << " checks\n";
         return 0;
     } catch (const std::exception& e) {

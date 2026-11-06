@@ -18,7 +18,7 @@ std::vector<LayerRect> parse_shapes(TextTokens& t, ParseWarnings& w) {
     std::string layer;
     while (t.peek() != "END") {
         const auto key = t.take();
-        if (key == "LAYER") { layer = t.take(); skip_to_semicolon(t); }
+        if (key == "LAYER") { layer = read_layer_name(t, w); skip_to_semicolon(t); }
         else if (key == "RECT" && t.peek() != "ITERATE") shapes.push_back(read_rect(t, layer));
         else if (key == "POLYGON" && t.peek() != "ITERATE") {
             const auto points = read_lef_polygon(t);
@@ -44,7 +44,7 @@ ViaInfo parse_via(TextTokens& t, ParseWarnings& w) {
                 throw std::runtime_error("duplicate TOPOFSTACKONLY on VIA " + via.name);
             via.top_of_stack_only = true;
         }
-        else if (key == "LAYER") { layer = t.take(); skip_to_semicolon(t); }
+        else if (key == "LAYER") { layer = read_layer_name(t, w); skip_to_semicolon(t); }
         else if (key == "RECT") via.shapes.push_back(read_rect(t, layer));
         else if (key == "RESISTANCE" || key == "PROPERTY" || key == "FOREIGN") t.skip_statement();
         else {
@@ -69,7 +69,7 @@ void parse_port(TextTokens& t, MacroPinInfo& pin, ParseWarnings& w) {
     while (t.peek() != "END") {
         const auto key = t.take();
         if (key == "LAYER") {
-            layer = t.take(); skip_to_semicolon(t);
+            layer = read_layer_name(t, w); skip_to_semicolon(t);
         } else if (key == "RECT" && t.peek() != "ITERATE") {
             if (t.peek() == "MASK") { t.take(); t.take(); }
             const double x1 = t.number(), y1 = t.number(), x2 = t.number(), y2 = t.number();
@@ -147,7 +147,9 @@ bool LefParser::parse(const std::string& lef_file_path) {
         while (!t.done()) {
             const auto key = t.take();
             if (key == "LAYER") {
-                const auto name = t.take();
+                const auto raw_name = t.take();
+                const auto name = canonical_layer_name(raw_name);
+                if (name != raw_name) w.add("layer name mapped to metalN", raw_name + " -> " + name);
                 std::string type;
                 Direction direction = Direction::UNKNOWN;
                 double width = 0.0;
@@ -165,7 +167,7 @@ bool LefParser::parse(const std::string& lef_file_path) {
                         if (width <= 0) throw std::runtime_error("invalid layer WIDTH: " + name);
                     } else t.skip_statement();
                 }
-                t.expect("END"); t.expect(name);
+                t.expect("END"); t.expect(raw_name);
                 if (type == "ROUTING") {
                     if (!get_layer_index(name) || direction == Direction::UNKNOWN)
                         throw std::runtime_error("expected metal1..metal20 and DIRECTION: " + name);
