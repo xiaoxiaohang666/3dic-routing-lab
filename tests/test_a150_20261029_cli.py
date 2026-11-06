@@ -85,6 +85,9 @@ class A150Cli(unittest.TestCase):
    # One more cleanup after the polish (d23), without the same-die blocker groups.
    self.assertAlmostEqual(packaged['options']['overflow_cleanup_final_seconds'],300)
    self.assertFalse(packaged['options']['overflow_cleanup_same_die_blockers'])
+   # Steiner-style TSV move proposals (st16).
+   self.assertEqual(packaged['options']['tsv_move_steiner'],16)
+   self.assertEqual(packaged['options']['tsv_move_steiner_margin'],16)
    self.assertEqual(packaged['options']['rrr_rounds'],64)
    self.assertEqual(packaged['options']['rrr_net_limit'],8192)
    self.assertEqual(packaged['options']['v7_rrr_net_limit'],32768)

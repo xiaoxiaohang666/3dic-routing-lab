@@ -17,7 +17,8 @@ the bounded maze search (20000 expansions, 0.03 s; --initial-maze-expansions 0 t
 If overflow is left after the polish, the cleanup runs once more (300 s from the same tail;
 --overflow-cleanup-final-seconds 0 turns it off; it never runs with the polish off).
 These are the settings of the 2026-11-06 d04 three-case run (job e584a705), except G, plus
-that final cleanup (d23 on 005).
+that final cleanup (d23 on 005) and Steiner-style TSV move proposals (st16: 16 proposals,
+margin 16; --tsv-move-steiner 0 turns them off).
 HELP
     exit 0
 fi
@@ -28,6 +29,7 @@ exec bash "$ROOT/scripts/run_a150_20261029.sh" \
     --v7-rrr-net-limit 32768 --rrr-net-limit 8192 \
     --congestion-target-q 30 --future-tsv-reservation 1 --climb-escape-radius 3 \
     --overflow-cleanup-seconds 800 --overflow-cleanup-blockers 1 --overflow-cleanup-final-seconds 300 \
+    --tsv-move-steiner 16 --tsv-move-steiner-margin 16 \
     --initial-maze-expansions 20000 --initial-maze-seconds 0.03 --wirelength-polish-seconds 1200 "$@" \
     --model official --score-profile 20261020 \
     --resource-profile documented --rules-profile a150-20261029 \
