@@ -16,6 +16,7 @@
 //                    another TSV, repeated until no net improves
 //   joint-free       best one-to-one assignment over every net's top cells
 //   joint-any        the same, ignoring other nets' wires on M10/M11
+//                    (both joint methods skipped above --joint-max-nets)
 // "free" means the landing tracks fit on M10 and M11 together with the other
 // nets' ordinary demand and fixed objects, without overflow. Every solution is
 // scored with the exact Pearson correlation and the official formulas; L moves
@@ -118,7 +119,7 @@ std::vector<double> parse_list(const std::string& s) {
 int main(int argc,char** argv) {
  try {
     std::string def_file,thermal_file,guide_file,output,fixed_model="observed-20261104",lambda_text="25,50,75,100,125,150,200,300,500,800";
-    std::vector<std::string> lefs;size_t top=48;int margin=1<<20,passes=100;
+    std::vector<std::string> lefs;size_t top=48,joint_max=4000;int margin=1<<20,passes=100;
     double gain=0,length=0,reference=0,congestion=-1;
     for(int i=1;i<argc;++i) {
         const std::string key=argv[i];if(i+1>=argc) throw std::runtime_error("expected option value for "+key);
@@ -128,6 +129,7 @@ int main(int argc,char** argv) {
         else if(key=="--output") output=value;else if(key=="--fixed-resource-model") fixed_model=value;
         else if(key=="--lambda-cells") lambda_text=value;else if(key=="--top") top=std::stoul(value);
         else if(key=="--margin") margin=std::stoi(value);else if(key=="--passes") passes=std::stoi(value);
+        else if(key=="--joint-max-nets") joint_max=std::stoul(value);
         else if(key=="--thermal-gain") gain=std::stod(value);else if(key=="--length") length=std::stod(value);
         else if(key=="--reference") reference=std::stod(value);else if(key=="--congestion") congestion=std::stod(value);
         else throw std::runtime_error("unknown option "+key);
@@ -249,7 +251,7 @@ int main(int argc,char** argv) {
     out<<std::setprecision(10);
     out<<"{\"N\":"<<N<<",\"cross_nets_movable\":"<<K<<",\"fixed_tsvs\":"<<fixed_tsv<<",\"nets_not_one_tsv\":"<<multi
        <<",\"legal_cells\":"<<legal_n<<",\"free_legal_cells\":"<<free_n<<",\"heat_mean\":"<<hmean<<",\"heat_sd\":"<<hsd
-       <<",\"pitch\":"<<pitch<<",\"top\":"<<top<<",\"margin\":"<<margin
+       <<",\"pitch\":"<<pitch<<",\"top\":"<<top<<",\"margin\":"<<margin<<",\"joint_skipped\":"<<(K>joint_max)
        <<",\"rho\":"<<rho0<<",\"W\":"<<W0<<",\"T\":"<<T0<<",\"S\":"<<S0
        <<",\"current_mean_heat_sd\":"<<cur_heat_sd/std::max<size_t>(K,1)
        <<",\"model_detour_cells_any\":"<<detour_any/pitch<<",\"model_detour_cells_free\":"<<detour_free/pitch
@@ -289,7 +291,7 @@ int main(int argc,char** argv) {
             if(!changed) break;
         }
         report("seq-free",now);
-        for(int variant=0;variant<2;++variant) {
+        for(int variant=0;variant<2&&K<=joint_max;++variant) {
             const auto& lists=variant?any[li]:fre[li];
             const auto cells=assign(lists);
             std::vector<Cand> chosen(K);
