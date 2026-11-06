@@ -57,6 +57,13 @@ struct RouterOptions {
     // nets filling the full cells next to it and route the overflowing net first.
     bool overflow_cleanup_blockers{false};
     size_t overflow_cleanup_group{8};
+    // Leave cross-die nets out of that blocker group: their TSV cells cannot
+    // move there, and larger nets would only take places in the group cap.
+    bool overflow_cleanup_same_die_blockers{false};
+    // One more overflow cleanup after the wirelength polish, on seconds taken
+    // from the same tail (zero turns it off; needs both passes on). The polish
+    // reroutes most nets and can open room the first cleanup did not have.
+    double overflow_cleanup_final_seconds{0};
     // Final pass after the overflow cleanup: seconds reserved from the same
     // deadline (zero turns it off). Every net is rerouted alone with the maze
     // search, longest excess over its reference first, and kept only when the
@@ -156,6 +163,8 @@ struct RouterCounters {
     size_t overflow_cleanup_rounds{}, overflow_cleanup_single{}, overflow_cleanup_single_accepted{},
            overflow_cleanup_joint{}, overflow_cleanup_joint_accepted{}, overflow_cleanup_joint_nets{};
     double overflow_cleanup_seconds{};
+    size_t overflow_cleanup_final_runs{};
+    double overflow_cleanup_final_seconds{}, overflow_cleanup_final_overflow_before{}, overflow_cleanup_final_overflow_after{};
     size_t wirelength_polish_rounds{}, wirelength_polish_attempted{}, wirelength_polish_accepted{};
     double wirelength_polish_seconds{}, wirelength_polish_gain_dbu{};
     size_t initial_maze_nets{};

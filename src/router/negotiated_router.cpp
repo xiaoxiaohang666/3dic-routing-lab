@@ -2177,18 +2177,23 @@ bool NegotiatedRouter::route_all() {
         std::cout<<"[INITIAL] nets="<<routes_.size()<<" slots="<<policy_.slots().size()<<" guide_overflow="<<best_metrics_.guide.overflow
                  <<" physical_overflow="<<best_metrics_.physical_overflow<<"\n";
         if(options_.low_layer_mask) run_low_layer_repair();
-        // The overflow cleanup and then the wirelength polish run last on time
-        // taken from the same deadline; together at most half of what is left.
+        // The overflow cleanup, the wirelength polish and optionally a second
+        // cleanup run last on time taken from the same deadline; together at
+        // most half of what is left.
         const auto cleanup_deadline=deadline_;
         const bool cleanup=options_.official_model && options_.overflow_cleanup_seconds>0;
         const bool polish=options_.official_model && options_.wirelength_polish_seconds>0;
-        std::chrono::steady_clock::duration polish_share{0};
+        const bool final_cleanup=cleanup && polish && options_.overflow_cleanup_final_seconds>0;
+        std::chrono::steady_clock::duration polish_share{0},final_share{0};
         if(cleanup || polish) {
             const double remaining=std::max(0.0,std::chrono::duration<double>(deadline_-std::chrono::steady_clock::now()).count());
-            const double wanted=(cleanup?options_.overflow_cleanup_seconds:0)+(polish?options_.wirelength_polish_seconds:0);
+            const double wanted=(cleanup?options_.overflow_cleanup_seconds:0)+(polish?options_.wirelength_polish_seconds:0)+
+                (final_cleanup?options_.overflow_cleanup_final_seconds:0);
             const double reserved=std::min(wanted,0.5*remaining);
             const double polish_seconds=polish?reserved*options_.wirelength_polish_seconds/wanted:0;
+            const double final_seconds=final_cleanup?reserved*options_.overflow_cleanup_final_seconds/wanted:0;
             polish_share=std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(polish_seconds));
+            final_share=std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(final_seconds));
             deadline_-=std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(reserved));
         }
         if(options_.v9_adaptive_budget) run_v9_schedule();
@@ -2230,8 +2235,8 @@ bool NegotiatedRouter::route_all() {
             if(!large_design()) recover_tsv_local();
         }
         if(cleanup) {
-            // The polish share stays reserved; whatever the cleanup leaves goes to the polish.
-            deadline_=cleanup_deadline-polish_share;
+            // The later shares stay reserved; whatever the cleanup leaves goes to the polish.
+            deadline_=cleanup_deadline-polish_share-final_share;
             const double before=best_metrics_.guide.quality;
             try {run_overflow_cleanup();}
             catch(const std::exception& e) {
@@ -2242,7 +2247,7 @@ bool NegotiatedRouter::route_all() {
             }
         }
         if(polish) {
-            deadline_=cleanup_deadline;
+            deadline_=cleanup_deadline-final_share;
             const double before=best_metrics_.guide.quality;
             try {run_wirelength_polish();}
             catch(const std::exception& e) {
@@ -2251,6 +2256,26 @@ bool NegotiatedRouter::route_all() {
                 complete_validation_cached_=false;validate_complete();best_metrics_=measure();verify_official_ledger(best_metrics_);
                 if(best_metrics_.guide.quality+1e-10<before) throw std::logic_error("wirelength polish failed to restore its accepted solution");
             }
+        }
+        if(final_cleanup && best_metrics_.guide.overflow>0) {
+            // Same pass as the first cleanup, on the room the polish left.
+            deadline_=cleanup_deadline;
+            const auto started=std::chrono::steady_clock::now();
+            const double before=best_metrics_.guide.quality;
+            ++counters_.overflow_cleanup_final_runs;
+            counters_.overflow_cleanup_final_overflow_before=best_metrics_.guide.overflow;
+            try {run_overflow_cleanup();}
+            catch(const std::exception& e) {
+                v7_refinement_active_=false;v7_scope_limit_=0;
+                ++rejection_reasons_[std::string("final overflow cleanup stopped: ")+e.what()];
+                complete_validation_cached_=false;validate_complete();best_metrics_=measure();verify_official_ledger(best_metrics_);
+                if(best_metrics_.guide.quality+1e-10<before) throw std::logic_error("final overflow cleanup failed to restore its accepted solution");
+            }
+            counters_.overflow_cleanup_final_overflow_after=best_metrics_.guide.overflow;
+            counters_.overflow_cleanup_final_seconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
+            std::cout<<"[OVERFLOW_CLEANUP_FINAL] overflow="<<counters_.overflow_cleanup_final_overflow_before<<"->"
+                     <<counters_.overflow_cleanup_final_overflow_after<<" quality="<<before<<"->"<<best_metrics_.guide.quality
+                     <<" seconds="<<counters_.overflow_cleanup_final_seconds<<'\n'<<std::flush;
         }
         deadline_=cleanup_deadline;
         validate_complete();best_metrics_=measure();
@@ -2585,6 +2610,10 @@ bool NegotiatedRouter::export_stats(const std::string& path) const {
            <<",\"overflow_cleanup_joint_accepted\":"<<counters_.overflow_cleanup_joint_accepted
            <<",\"overflow_cleanup_joint_nets\":"<<counters_.overflow_cleanup_joint_nets
            <<",\"overflow_cleanup_seconds\":"<<counters_.overflow_cleanup_seconds
+           <<",\"overflow_cleanup_final_runs\":"<<counters_.overflow_cleanup_final_runs
+           <<",\"overflow_cleanup_final_seconds\":"<<counters_.overflow_cleanup_final_seconds
+           <<",\"overflow_cleanup_final_overflow_before\":"<<counters_.overflow_cleanup_final_overflow_before
+           <<",\"overflow_cleanup_final_overflow_after\":"<<counters_.overflow_cleanup_final_overflow_after
            <<",\"initial_maze_nets\":"<<counters_.initial_maze_nets
            <<",\"initial_maze_seconds\":"<<counters_.initial_maze_seconds
            <<",\"wirelength_polish_rounds\":"<<counters_.wirelength_polish_rounds
@@ -2688,6 +2717,8 @@ bool NegotiatedRouter::export_stats(const std::string& path) const {
            <<",\"overflow_cleanup_rounds\":"<<options_.overflow_cleanup_rounds
            <<",\"overflow_cleanup_blockers\":"<<options_.overflow_cleanup_blockers
            <<",\"overflow_cleanup_group\":"<<options_.overflow_cleanup_group
+           <<",\"overflow_cleanup_same_die_blockers\":"<<(options_.overflow_cleanup_same_die_blockers?"true":"false")
+           <<",\"overflow_cleanup_final_seconds\":"<<options_.overflow_cleanup_final_seconds
            <<",\"wirelength_polish_seconds\":"<<options_.wirelength_polish_seconds
            <<",\"initial_maze_expansions\":"<<options_.initial_maze_expansions
            <<",\"initial_maze_seconds\":"<<options_.initial_maze_seconds
