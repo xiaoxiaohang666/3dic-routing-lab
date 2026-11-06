@@ -131,6 +131,9 @@ int main(int argc,char** argv) {
     // Net-in-cell table.
     std::ofstream nets(out/"cell_nets.csv");nets.exceptions(std::ios::badbit|std::ios::failbit);nets<<std::setprecision(10);
     nets<<"layer,col,row,net,pins,cross_die,amount,shape,run_cells,own_pin_this_layer,own_pin_this_column,tsv_dist,bbox_hp,shift_run_room,other_layer_run_room,stack_move1_room\n";
+    // One JSON line per (cell, net): pins (access point cell, shape cells), exempt cells, the net's Guide in cells,
+    // and spare tracks around every Guide cell, so the choice can be replayed by hand.
+    std::ofstream detail(out/"cell_nets_detail.jsonl");detail.exceptions(std::ios::badbit|std::ios::failbit);detail<<std::setprecision(10);
     std::map<std::string,Count> shape,pin_rel,fix_kind,tsv_dist_k,cross;
     for(int node:over_nodes) {
         const int l=graph.layer(node),c=graph.col(node),r=graph.row(node);
@@ -177,6 +180,27 @@ int main(int argc,char** argv) {
                 }
             }
             int tdist=-1;if(net_tsv[i].first>=0) tdist=std::max(std::abs(net_tsv[i].first-c),std::abs(net_tsv[i].second-r));
+            {
+                detail<<"{\"cell\":["<<l<<','<<c<<','<<r<<"],\"net\":\""<<net.name<<"\",\"pins\":[";
+                for(size_t k=0;k<net.pins.size();++k) {
+                    const auto& pn=net.pins[k];if(k) detail<<',';
+                    detail<<"{\"name\":\""<<pn.name<<"\",\"layer\":"<<pn.layer_idx<<",\"coord\":["<<pn.coord.x<<','<<pn.coord.y<<"],\"coord_cell\":["<<grid.get_col(pn.coord.x)<<','<<grid.get_row(pn.coord.y)<<"],\"shapes\":[";
+                    for(size_t q=0;q<pn.port_rects.size();++q) {const auto& sh=pn.port_rects[q];if(q) detail<<',';
+                        detail<<'['<<sh.layer_idx<<','<<sh.rect.x1<<','<<sh.rect.y1<<','<<sh.rect.x2<<','<<sh.rect.y2<<']';}
+                    detail<<"]}";
+                }
+                detail<<"],\"exempt\":[";bool f1=true;
+                for(int pnode:pins){if(!f1)detail<<',';f1=false;detail<<'['<<graph.layer(pnode)<<','<<graph.col(pnode)<<','<<graph.row(pnode)<<']';}
+                detail<<"],\"guide_cells\":[";bool f2=true;
+                for(auto [gn,ga]:net_demand[i]){if(!f2)detail<<',';f2=false;
+                    detail<<'['<<graph.layer(gn)<<','<<graph.col(gn)<<','<<graph.row(gn)<<','<<ga<<','<<graph.official_capacity(gn)<<','<<graph.official_obstacle_demand(gn)<<','<<demand[gn]<<']';}
+                detail<<"],\"around\":[";bool f3=true;
+                // Spare tracks on the net's die layers in the 5x5 box around the overflow cell.
+                for(int y=die_low(l);y<=std::min(die_high(l),die_low(l)+3);++y) for(int dr=-2;dr<=2;++dr) for(int dc=-2;dc<=2;++dc) {
+                    const int nb=graph.node(c+dc,r+dr,y);if(nb<0) continue;if(!f3)detail<<',';f3=false;
+                    detail<<'['<<y<<','<<c+dc<<','<<r+dr<<','<<graph.official_capacity(nb)<<','<<graph.official_obstacle_demand(nb)<<','<<demand[nb]<<']';}
+                detail<<"]}\n";
+            }
             nets<<l<<','<<c<<','<<r<<','<<net.name<<','<<net.pins.size()<<','<<crossdie<<','<<amount<<','<<sh<<','<<run_cells<<','<<pin_layer<<','<<pin_col<<','<<tdist<<','
                 <<(pc1-pc0)+(pr1-pr0)<<','<<shift_ok<<','<<layer_ok<<','<<stack_ok<<'\n';
             const std::string L="M"+std::to_string(l);
