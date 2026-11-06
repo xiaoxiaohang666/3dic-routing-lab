@@ -237,6 +237,60 @@ void macro_geometry(const fs::path& dir) {
     }
     require(distinguishes_checker,"macro fixture distinguishes geometry from checker coordinates");
 }
+// Steiner-style proxy: a landing beside the middle of a long pin-tree edge is
+// charged its distance to that edge, not a detour to the nearest pin, and the
+// window scan proposes free slots on the tree.
+std::string steiner_design() {
+    std::ostringstream out;
+    out<<"UNITS DISTANCE MICRONS 10 ; DIEAREA ( 0 0 ) ( 600 400 ) ; "
+       <<"GCELLGRID X 0 DO 7 STEP 100 ; GCELLGRID Y 0 DO 5 STEP 100 ; ";
+    for(int layer=1;layer<=20;++layer)
+        out<<"TRACKS X 5 DO 60 STEP 10 LAYER "<<get_layer_name(layer)<<" ; "
+           <<"TRACKS Y 5 DO 40 STEP 10 LAYER "<<get_layer_name(layer)<<" ; ";
+    out<<"COMPONENTS 0 ; END COMPONENTS PINS 6 ; ";
+    for(int side=0;side<2;++side) for(int x:{50,550})
+        out<<"- a"<<x<<(side?'t':'b')<<" + LAYER "<<get_layer_name(side?14:3)<<" ( -1 -1 ) ( 1 1 ) + FIXED ( "<<x<<" 50 ) N ; ";
+    out<<"- bb + LAYER metal3 ( -1 -1 ) ( 1 1 ) + FIXED ( 50 350 ) N ; - bt + LAYER metal14 ( -1 -1 ) ( 1 1 ) + FIXED ( 50 350 ) N ; ";
+    out<<"END PINS NETS 2 ; - n0 ( PIN a50b ) ( PIN a550b ) ( PIN a50t ) ( PIN a550t ) ; - n1 ( PIN bb ) ( PIN bt ) ; END NETS END DESIGN";
+    return out.str();
+}
+void steiner(const fs::path& dir,const LefParser& lef) {
+    DefParser def;require(def.parse(write(dir,"steiner.def",steiner_design()),lef,DefGridMapping::OFFICIAL_FULL),"steiner design parses");
+    RoutingGraphOptions go;go.geometry=RoutingGeometryMode::GLOBAL_GUIDE;go.allow_nonpreferred=false;go.score_20261020=true;
+    RoutingGraph graph(def,lef,go);TsvPolicyOptions po;po.resource_mode=TsvResourceMode::GLOBAL_GRID;
+    TsvPolicy policy(def,lef,graph,po);ThermalParser thermal;
+    require(thermal.parse_json(write(dir,"steiner_heat.json",heat()),graph.grid(),def.dbu_per_micron(),def.die_area(),ThermalMapping::OFFICIAL_PREVIOUS),"steiner heat parses");
+    const size_t a=net_index(def,"n0"),b=net_index(def,"n1");
+    std::vector<int> assignment(def.nets().size(),-1);
+    assignment[a]=slot_at(policy,graph,0,0);assignment[b]=slot_at(policy,graph,0,3);
+    TsvMoveSearch search(def,graph,policy,thermal,assignment);
+    const double before=search.current_correlation();
+    const int off_edge=slot_at(policy,graph,3,1);
+    TsvMoveSearchOptions mst;mst.max_candidates=64;mst.thermal_gain=0;mst.length_price=1;
+    auto steiner=mst;steiner.steiner_length=true;
+    const auto find=[&](const std::vector<TsvMoveCandidate>& list,int slot)->const TsvMoveCandidate* {
+        for(const auto& c:list) if(c.slot==slot) return &c;
+        return nullptr;
+    };
+    const auto plain=search.candidates(a,mst),tree=search.candidates(a,steiner);
+    const auto* p=find(plain,off_edge);const auto* t=find(tree,off_edge);
+    require(p&&t,"both proxies see the slot one row off the pin-tree edge");
+    close(t->proxy_length_delta_dbu,200,"Steiner proxy charges 100 DBU per die to reach the tree edge");
+    require(p->proxy_length_delta_dbu>t->proxy_length_delta_dbu+1,"terminal MST charges a detour to the nearest pin");
+    close(t->estimated_score_delta,-200,"Steiner estimate uses the same length price");
+    TsvMoveSearchOptions scan;scan.max_candidates=3;scan.thermal_gain=0;scan.length_price=1;
+    scan.steiner_length=true;scan.steiner_scan=3;scan.steiner_margin=0;
+    const auto on_tree=search.candidates(a,scan);
+    require(on_tree.size()==3,"window scan fills the candidate budget");
+    for(const auto& c:on_tree) {
+        require(graph.row(policy.slots()[size_t(c.slot)].lower_node)==0&&c.proxy_length_delta_dbu==0,
+                "window scan proposes free slots on the pin tree");
+        require(c.slot!=assignment[a]&&c.slot!=assignment[b],"window scan respects occupancy");
+    }
+    scan.steiner_cells=0;
+    rejects([&]{search.candidates(a,scan);},"zero scan cell budget rejected");
+    close(search.current_correlation(),before,"proposals leave the Pearson state unchanged");
+}
 void work_budget(const fs::path& dir,const LefParser& lef) {
     DefParser def;require(def.parse(write(dir,"fanout.def",design(false,2000)),lef,DefGridMapping::OFFICIAL_FULL),"high fanout design parses");
     RoutingGraphOptions go;go.geometry=RoutingGeometryMode::GLOBAL_GUIDE;go.allow_nonpreferred=false;go.score_20261020=true;
@@ -256,6 +310,6 @@ int main(int argc,char** argv) {
     try {
         require(argc==2,"usage: v7_tsv_tests ARTIFACT_DIRECTORY");const fs::path dir=argv[1];fs::create_directories(dir);
         LefParser lef;require(lef.parse(write(dir,"tech.lef",technology())),"technology parses");
-        run(dir,lef);run(dir,lef,true);macro_geometry(dir);work_budget(dir,lef);std::cout<<"V7 TSV move checks: "<<checks<<'\n';return 0;
+        run(dir,lef);run(dir,lef,true);macro_geometry(dir);steiner(dir,lef);work_budget(dir,lef);std::cout<<"V7 TSV move checks: "<<checks<<'\n';return 0;
     } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}
 }

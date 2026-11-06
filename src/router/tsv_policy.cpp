@@ -151,6 +151,39 @@ double terminal_mst(const Net& net, const SlotCandidate& slot, bool top, double 
     return total;
 }
 
+// Bounding boxes of the rectilinear MST edges of one die's pins, and the
+// Manhattan distance from a point to the nearest of them (to the single pin
+// when there is one, zero when there is none). A route of that edge passes
+// inside its box, so this is the length a Steiner tree needs to reach the point.
+std::vector<std::array<double,4>> pin_mst_boxes(const std::vector<Point>& pins) {
+    std::vector<std::array<double,4>> boxes;const size_t n=pins.size();if (n<2) return boxes;
+    std::vector<double> dist(n,std::numeric_limits<double>::infinity());std::vector<int> from(n,-1);
+    std::vector<bool> used(n,false);dist[0]=0;
+    for (size_t k=0;k<n;++k) {
+        int u=-1;for (size_t j=0;j<n;++j) if (!used[j]&&(u<0||dist[j]<dist[size_t(u)])) u=int(j);
+        used[size_t(u)]=true;
+        if (from[size_t(u)]>=0) {
+            const auto& a=pins[size_t(u)];const auto& b=pins[size_t(from[size_t(u)])];
+            boxes.push_back({std::min(a.x,b.x),std::min(a.y,b.y),std::max(a.x,b.x),std::max(a.y,b.y)});
+        }
+        for (size_t v=0;v<n;++v) if (!used[v]) {
+            const double d=pins[size_t(u)].distance_to(pins[v]);
+            if (d<dist[v]) {dist[v]=d;from[v]=u;}
+        }
+    }
+    return boxes;
+}
+double pin_tree_distance(const std::vector<Point>& pins,const std::vector<std::array<double,4>>& boxes,Point p) {
+    if (pins.empty()) return 0;
+    if (boxes.empty()) return pins.front().distance_to(p);
+    double best=std::numeric_limits<double>::infinity();
+    for (const auto& b:boxes) {
+        const double dx=p.x<b[0]?b[0]-p.x:(p.x>b[2]?p.x-b[2]:0),dy=p.y<b[1]?b[1]-p.y:(p.y>b[3]?p.y-b[3]:0);
+        best=std::min(best,dx+dy);if (best==0) break;
+    }
+    return best;
+}
+
 // Balanced spatial index. Query results are exact Manhattan nearest resources;
 // the limited pool and subsequent preference matching are engineering heuristics.
 class SlotPointIndex {
@@ -1385,7 +1418,7 @@ struct TsvMoveSearch::Impl {
     const DefParser& def;
     const RoutingGraph& graph;
     const TsvPolicy& policy;
-    std::vector<int> assignment, owner, slot_cells;
+    std::vector<int> assignment, owner, slot_cells, cell_slot;
     std::vector<double> normalized_heat;
     std::unique_ptr<PearsonState> pearson;
     std::unique_ptr<SlotPointIndex> free_index;
@@ -1412,12 +1445,13 @@ struct TsvMoveSearch::Impl {
             heat[size_t(row)*grid.cols+col]=h;sum+=h;square+=static_cast<long double>(h)*h;
             minimum=std::min(minimum,h);maximum=std::max(maximum,h);
         }
-        const auto& slots=policy.slots();
+        const auto& slots=policy.slots();cell_slot.assign(cells,-1);
         for (size_t id=0;id<slots.size();++id) {
             const int col=grid.get_col(slots[id].point.x),row=grid.get_row(slots[id].point.y);
             if (col<0||row<0||col>=grid.cols||row>=grid.rows)
                 throw std::logic_error("TSV move slot outside thermal grid");
             slot_cells[id]=row*grid.cols+col;
+            if (cell_slot[size_t(slot_cells[id])]<0) cell_slot[size_t(slot_cells[id])]=int(id);
             normalized_heat[id]=maximum>minimum?(heat[size_t(slot_cells[id])]-minimum)/(maximum-minimum):0;
         }
         size_t occupied=0;
@@ -1463,7 +1497,8 @@ int TsvMoveSearch::current_slot(size_t net_index) const {return impl_->assignmen
 
 std::vector<TsvMoveCandidate> TsvMoveSearch::candidates(size_t net_index,const TsvMoveSearchOptions& o) const {
     if (o.max_candidates>4096 || !std::isfinite(o.length_price)||o.length_price<0 ||
-        !std::isfinite(o.thermal_gain)||o.thermal_gain<0 || !std::isfinite(o.risk_price)||o.risk_price<0)
+        !std::isfinite(o.thermal_gain)||o.thermal_gain<0 || !std::isfinite(o.risk_price)||o.risk_price<0 ||
+        o.steiner_scan>4096 || o.steiner_cells<1 || o.steiner_cells>1048576 || o.steiner_margin<0 || o.steiner_margin>4096)
         throw std::invalid_argument("invalid TSV move proposal budget or score price");
     const auto& state=*impl_;const auto& net=state.def.nets().at(net_index);
     const int old=state.assignment.at(net_index);
@@ -1528,8 +1563,39 @@ std::vector<TsvMoveCandidate> TsvMoveSearch::candidates(size_t net_index,const T
             pool.insert(ids.begin(),ids.end());
         }
     }
+    std::array<std::vector<Point>,2> side_pins;std::array<std::vector<std::array<double,4>>,2> side_boxes;
+    if (o.steiner_length||o.steiner_scan) {
+        for (const auto& pin:net.pins) side_pins[pin.layer_idx>=11].push_back(pin.coord);
+        for (int s=0;s<2;++s) side_boxes[size_t(s)]=pin_mst_boxes(side_pins[size_t(s)]);
+    }
+    const auto tree_length=[&](Point p) {
+        return pin_tree_distance(side_pins[0],side_boxes[0],p)+pin_tree_distance(side_pins[1],side_boxes[1],p);
+    };
+    if (o.steiner_scan) {
+        const auto& grid=state.graph.grid();
+        double x1=std::numeric_limits<double>::infinity(),y1=x1,x2=-x1,y2=-x1;
+        for (const auto& pin:net.pins) {x1=std::min(x1,pin.coord.x);y1=std::min(y1,pin.coord.y);x2=std::max(x2,pin.coord.x);y2=std::max(y2,pin.coord.y);}
+        const auto col=[&](double x){return std::clamp(grid.get_col(std::clamp(x,grid.x_lines.front(),grid.x_lines.back())),0,grid.cols-1);};
+        const auto row=[&](double y){return std::clamp(grid.get_row(std::clamp(y,grid.y_lines.front(),grid.y_lines.back())),0,grid.rows-1);};
+        const int c1=std::max(0,col(x1)-o.steiner_margin),c2=std::min(grid.cols-1,col(x2)+o.steiner_margin);
+        const int r1=std::max(0,row(y1)-o.steiner_margin),r2=std::min(grid.rows-1,row(y2)+o.steiner_margin);
+        const double area=double(c2-c1+1)*double(r2-r1+1);
+        const int stride=std::max(1,int(std::ceil(std::sqrt(area/double(o.steiner_cells)))));
+        std::vector<std::pair<double,int>> ranked;
+        for (int r=r1;r<=r2;r+=stride) for (int c=c1;c<=c2;c+=stride) {
+            const int id=state.cell_slot[size_t(r)*grid.cols+c];
+            if (id<0||id==old||state.owner[size_t(id)]!=-1||!state.policy.compatible(net,id)) continue;
+            ranked.emplace_back(heat_price*state.normalized_heat[size_t(id)]-o.length_price*tree_length(slots[size_t(id)].point),id);
+        }
+        const size_t keep=std::min(o.steiner_scan,ranked.size());
+        std::partial_sort(ranked.begin(),ranked.begin()+std::ptrdiff_t(keep),ranked.end(),[](const auto& a,const auto& b) {
+            return a.first!=b.first?a.first>b.first:a.second<b.second;
+        });
+        for (size_t k=0;k<keep;++k) pool.insert(ranked[k].second);
+    }
     const double via_penalty=0.2*state.graph.ell0();
     const auto length=[&](int id) {
+        if (o.steiner_length) return tree_length(slots[size_t(id)].point);
         return terminal_mst(net,slots[size_t(id)],false,via_penalty)+terminal_mst(net,slots[size_t(id)],true,via_penalty);
     };
     const double old_length=length(old),old_risk=state.risk(old);

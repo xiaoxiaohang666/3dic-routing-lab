@@ -406,6 +406,10 @@ void NegotiatedRouter::optimize_dynamic_tsv() {
             o.length_price=current.guide.wirelength>current.guide.reference?
                 45.0*current.guide.reference/(current.guide.wirelength*current.guide.wirelength):0;
             o.risk_price=0.15/std::pow(1+current.official.squared_normalized_overflow,1.5);
+            if(options_.tsv_move_steiner) {
+                o.steiner_length=true;o.steiner_scan=options_.tsv_move_steiner;
+                o.steiner_margin=options_.tsv_move_steiner_margin;
+            }
             return o;
         };
         const auto query=[&](size_t i,TsvMoveSearchOptions options,bool cheap,std::set<int>* newly_admitted) {

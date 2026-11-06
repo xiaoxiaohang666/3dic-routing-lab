@@ -32,6 +32,9 @@ void usage(const char* p) {
         <<"--climb-escape-radius N (0..8; default 3 under --model official with the a150-20261029 rules and fast quality, otherwise 0; offer a sideways step before a via climb through full cells)\n"
         <<"--recovery-global-wirelength 0|1 (global-W recovery shortlist; default 0)\n"
         <<"--initial-short-first 0|1 (default 0; initial routing takes same-die nets shortest pin span first)\n"
+        <<"--tsv-move-steiner N (0..4096, default 0; V7/dynamic TSV moves price a landing by its distance to each die's\n"
+        <<"    pin tree and add N slots scanned around the pins by heat value minus that length; official only)\n"
+        <<"--tsv-move-steiner-margin N (0..4096 GCells around the pins, default 16; requires --tsv-move-steiner N>0)\n"
         <<"--layer-swap 0|1 (default 0; adaptive-schedule stage: a climbing same-die net takes its cheapest path and\n"
         <<"  the nets filling it are rerouted; kept only if the score improves without adding wirelength)\n"
         <<"--layer-swap-blockers N (1..16, default 4; nets rerouted with each layer swap)\n"
@@ -134,6 +137,7 @@ int main(int argc,char** argv) {
         options.process_started=std::chrono::steady_clock::now();
         std::set<std::string> explicit_v8,explicit_v9;
         std::string rules_profile="a150-20261029",obstacle_scope="interface",objective_profile="documented";
+        bool explicit_steiner_margin=false;
         bool explicit_rules=false,explicit_scope=false,explicit_track_demand=false,explicit_climb_radius=false,explicit_cleanup_seconds=false,explicit_cleanup_blockers=false;
         for(int i=1;i<argc;++i) {
             std::string arg=argv[i];if(arg=="--help"||arg=="-h") {usage(argv[0]);return 0;}
@@ -148,7 +152,7 @@ int main(int argc,char** argv) {
                 "--future-tsv-reservation","--resource-local-rrr","--joint-layer-recovery","--resource-candidate-pool","--thermal-coverage","--tsv-index-reuse","--checkpoint-reuse","--checkpoint-amortization"};
             const std::set<std::string> low_layer_options={"--low-layer-mask","--low-layer-seconds","--low-layer-max-attempts","--rrr-reserved-seconds"};
             const std::set<std::string> tree_move_options={"--tsv-tree-move","--tsv-tree-move-seconds","--tsv-tree-move-expansions"};
-            if(arg!="--recovery-global-wirelength"&&arg!="--initial-short-first"&&arg!="--layer-swap"&&arg!="--layer-swap-blockers"&&arg!="--via-stack-radius"&&arg!="--climb-escape-radius"&&arg!="--hotspot-cell-limit"&&arg!="--overflow-cleanup-seconds"&&arg!="--overflow-cleanup-rounds"&&arg!="--overflow-cleanup-blockers"&&arg!="--overflow-cleanup-group"&&arg!="--wirelength-polish-seconds"&&arg!="--wirelength-polish-rounds"&&arg!="--initial-maze-expansions"&&arg!="--initial-maze-seconds"&&arg!="--objective-profile"&&!tree_move_options.count(arg)&&!low_layer_options.count(arg)&&!landing_options.count(arg)&&!v9_options.count(arg)&&!v8_options.count(arg)&&!recognized.count(arg)&&!recovery_options.count(arg)&&!v5_options.count(arg)&&!v7_options.count(arg)&&arg!="--score-profile") throw std::runtime_error("unknown option: "+arg);
+            if(arg!="--recovery-global-wirelength"&&arg!="--initial-short-first"&&arg!="--tsv-move-steiner"&&arg!="--tsv-move-steiner-margin"&&arg!="--layer-swap"&&arg!="--layer-swap-blockers"&&arg!="--via-stack-radius"&&arg!="--climb-escape-radius"&&arg!="--hotspot-cell-limit"&&arg!="--overflow-cleanup-seconds"&&arg!="--overflow-cleanup-rounds"&&arg!="--overflow-cleanup-blockers"&&arg!="--overflow-cleanup-group"&&arg!="--wirelength-polish-seconds"&&arg!="--wirelength-polish-rounds"&&arg!="--initial-maze-expansions"&&arg!="--initial-maze-seconds"&&arg!="--objective-profile"&&!tree_move_options.count(arg)&&!low_layer_options.count(arg)&&!landing_options.count(arg)&&!v9_options.count(arg)&&!v8_options.count(arg)&&!recognized.count(arg)&&!recovery_options.count(arg)&&!v5_options.count(arg)&&!v7_options.count(arg)&&arg!="--score-profile") throw std::runtime_error("unknown option: "+arg);
             if(i+1>=argc) throw std::runtime_error("missing option value: "+arg);
             const std::string value=argv[++i];if(value.empty()||value[0]=='-') throw std::runtime_error("invalid option value: "+arg);
             if(arg=="--recovery-global-wirelength") {
@@ -157,6 +161,12 @@ int main(int argc,char** argv) {
             } else if(arg=="--initial-short-first") {
                 const int enabled=integer(value);if(enabled>1)throw std::runtime_error("initial-short-first must be 0 or 1");
                 options.initial_short_first=enabled;
+            } else if(arg=="--tsv-move-steiner") {
+                const int n=integer(value);if(n>4096)throw std::runtime_error("tsv-move-steiner must be 0..4096");
+                options.tsv_move_steiner=size_t(n);
+            } else if(arg=="--tsv-move-steiner-margin") {
+                const int n=integer(value);if(n>4096)throw std::runtime_error("tsv-move-steiner-margin must be 0..4096");
+                options.tsv_move_steiner_margin=n;explicit_steiner_margin=true;
             } else if(arg=="--layer-swap") {
                 const int enabled=integer(value);if(enabled>1)throw std::runtime_error("layer-swap must be 0 or 1");
                 options.layer_swap=enabled;
@@ -623,6 +633,8 @@ int main(int argc,char** argv) {
         if(options.via_stack_radius && !options.v8_rrr) throw std::runtime_error("via stack radius requires --v8-rrr 1");
         if(options.recovery_global_wirelength && !options.large_recovery) throw std::runtime_error("global wirelength recovery requires --large-recovery 1");
         if(options.recovery_rotate && !options.large_recovery) throw std::runtime_error("recovery rotation requires --large-recovery 1");
+        if(options.tsv_move_steiner && !options.official_model) throw std::runtime_error("--tsv-move-steiner requires --model official");
+        if(explicit_steiner_margin && !options.tsv_move_steiner) throw std::runtime_error("--tsv-move-steiner-margin requires --tsv-move-steiner N>0");
         if(options.layer_swap && (!options.official_model || !options.v9_adaptive_budget))
             throw std::runtime_error("layer swap requires --model official and --v9-adaptive-budget 1");
         if((options.v8_tsv_rematch||options.v8_tsv_dynamic)&&options.tsv_policy.resource_mode!=eda::TsvResourceMode::GLOBAL_GRID)

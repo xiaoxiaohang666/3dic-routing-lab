@@ -201,6 +201,16 @@ struct TsvMoveSearchOptions {
     size_t max_candidates{16}, max_pins{128};
     double length_price{0.0}; // Positive weighted-quality cost per DBU.
     double thermal_gain{20.0}, risk_price{0.0};
+    // Opt-in Steiner-style length proxy. steiner_length prices a landing by its
+    // distance to the nearest edge bounding box of each die's pin MST instead of
+    // a terminal MST through the pins, so a landing beside the middle of a long
+    // tree edge is not charged a detour to the nearest pin. steiner_scan adds up
+    // to that many free compatible slots from a window of steiner_margin GCells
+    // around the pins (at most steiner_cells scanned, evenly strided), ranked by
+    // heat value minus that length. Both off keeps the historical proposals.
+    bool steiner_length{false};
+    size_t steiner_scan{0}, steiner_cells{16384};
+    int steiner_margin{16};
 };
 struct TsvMoveCandidate {
     int slot{-1};

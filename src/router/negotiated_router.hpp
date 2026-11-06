@@ -40,6 +40,12 @@ struct RouterOptions {
     bool unified_budget{false}, score_unit_cost{false};
     double congestion_price_cap{10000};
     size_t v8_rrr_group_size{48}, v8_tsv_probe_candidates{2};
+    // Opt-in Steiner-style TSV move proposals for the V7 and dynamic TSV
+    // stages (TsvMoveSearchOptions::steiner_*): N>0 prices landings by distance
+    // to each die's pin tree and adds N window-scanned slots per query. Zero
+    // keeps the historical proposals.
+    size_t tsv_move_steiner{0};
+    int tsv_move_steiner_margin{16};
     // Opt-in concentrated-hotspot candidate. Zero preserves the all-cell queue.
     size_t hotspot_cell_limit{0};
     // Translate ordinary via ladders along compatible endpoint directions.

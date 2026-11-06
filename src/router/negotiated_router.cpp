@@ -1996,6 +1996,10 @@ void NegotiatedRouter::optimize_v7_tsv() {
                     settings.thermal_gain=options_.official_metrics.thermal_gain;
                     settings.length_price=before.guide.wirelength>before.guide.reference?
                         45.0*before.guide.reference/(before.guide.wirelength*before.guide.wirelength):0.0;
+                    if(options_.tsv_move_steiner) {
+                        settings.steiner_length=true;settings.steiner_scan=options_.tsv_move_steiner;
+                        settings.steiner_margin=options_.tsv_move_steiner_margin;
+                    }
                     const auto candidates=proposals.candidates(i,settings);
                     counters_.v7_tsv_candidates+=candidates.size();
                     for(const auto& candidate:candidates) {
@@ -2714,6 +2718,8 @@ bool NegotiatedRouter::export_stats(const std::string& path) const {
            <<",\"via_stack_radius\":"<<options_.via_stack_radius
            <<",\"climb_escape_radius\":"<<options_.climb_escape_radius
            <<",\"initial_short_first\":"<<(options_.initial_short_first?"true":"false")
+           <<",\"tsv_move_steiner\":"<<options_.tsv_move_steiner
+           <<",\"tsv_move_steiner_margin\":"<<options_.tsv_move_steiner_margin
            <<",\"v8_tsv_probe_candidates\":"<<options_.v8_tsv_probe_candidates
            <<",\"v8_tsv_rematch_group_size\":"<<options_.v8_tsv_rematch_group_size
            <<",\"v8_tsv_rematch_nets\":"<<options_.v8_tsv_rematch_nets
