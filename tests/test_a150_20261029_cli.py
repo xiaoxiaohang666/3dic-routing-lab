@@ -64,17 +64,24 @@ class A150Cli(unittest.TestCase):
    self.assertEqual(fresh['a150']['all_layer_violations'],0)
    # Official runs use the sideways step at radius 3; an explicit 0 turns it off.
    self.assertEqual(saved['options']['climb_escape_radius'],3)
+   # The overflow cleanup is on by default in the same runs: 800 s with blockers.
+   self.assertEqual(saved['options']['overflow_cleanup_seconds'],800)
+   self.assertEqual(saved['options']['overflow_cleanup_blockers'],1)
    def options_of(name,*flags,command=(ROUTER,),run_env=env):
     out=d/f'{name}.json'
     run([*command,'--def',df,'--lef',lf,'--thermal-json',heat,*flags,'--output',d/f'{name}.guide','--stats',out,'--time-limit','10'],run_env)
     return json.loads(out.read_text())
-   off=options_of('radius-off','--model','official','--official-runtime',RUNTIME,'--rrr-rounds','0','--tsv-rounds','0','--wirelength-rounds','0','--climb-escape-radius','0')
+   off=options_of('radius-off','--model','official','--official-runtime',RUNTIME,'--rrr-rounds','0','--tsv-rounds','0','--wirelength-rounds','0','--climb-escape-radius','0','--overflow-cleanup-seconds','0','--overflow-cleanup-blockers','0')
    self.assertEqual(off['options']['climb_escape_radius'],0)
+   self.assertEqual(off['options']['overflow_cleanup_seconds'],0)
+   self.assertEqual(off['options']['overflow_cleanup_blockers'],0)
    # The platform entry goes through the same scripts as a built package.
    package=dict(env,EDA_ROUTER_BINARY=str(ROUTER),EDA_OFFICIAL_RUNTIME=str(RUNTIME))
    script=Path(__file__).resolve().parent.parent/'scripts/run_package.sh'
    packaged=options_of('radius-package',command=('bash',script),run_env=package)
    self.assertEqual(packaged['options']['climb_escape_radius'],3)
+   self.assertEqual(packaged['options']['overflow_cleanup_seconds'],800)
+   self.assertEqual(packaged['options']['overflow_cleanup_blockers'],1)
    self.assertEqual(packaged['options']['rrr_rounds'],64)
    self.assertEqual(packaged['options']['rrr_net_limit'],8192)
    self.assertEqual(packaged['options']['v7_rrr_net_limit'],32768)

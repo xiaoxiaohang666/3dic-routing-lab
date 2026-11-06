@@ -71,6 +71,15 @@ set_target_properties(eda_diagnose_fixed_resources PROPERTIES RUNTIME_OUTPUT_DIR
 add_executable(eda_diagnose_congestion_cause scripts/diagnose_congestion_cause.cpp)
 target_link_libraries(eda_diagnose_congestion_cause PRIVATE eda_core)
 set_target_properties(eda_diagnose_congestion_cause PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+add_executable(eda_diagnose_overflow_cells scripts/diagnose_overflow_cells.cpp)
+target_link_libraries(eda_diagnose_overflow_cells PRIVATE eda_core)
+set_target_properties(eda_diagnose_overflow_cells PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+add_executable(eda_replay_overflow_nets scripts/replay_overflow_nets.cpp)
+target_link_libraries(eda_replay_overflow_nets PRIVATE eda_core)
+set_target_properties(eda_replay_overflow_nets PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+add_executable(eda_simulate_overflow_cleanup scripts/simulate_overflow_cleanup.cpp)
+target_link_libraries(eda_simulate_overflow_cleanup PRIVATE eda_core)
+set_target_properties(eda_simulate_overflow_cleanup PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 # Read-only estimate of the single-TSV heat and wirelength trade-off; never linked into the router.
 add_executable(eda_diagnose_tsv_heat_tradeoff scripts/diagnose_tsv_heat_tradeoff.cpp)

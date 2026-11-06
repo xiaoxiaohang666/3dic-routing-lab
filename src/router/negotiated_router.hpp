@@ -52,6 +52,15 @@ struct RouterOptions {
     // short nets get the low layers and long nets, whose via climb costs less
     // per unit length, take the upper layers. Cross-die nets still go first.
     bool initial_short_first{false};
+    // Final pass for overflow left after every other stage: seconds reserved
+    // from the same deadline (zero turns the pass off). Each overflowing net is
+    // rerouted alone and kept only when the complete score improves.
+    double overflow_cleanup_seconds{0};
+    int overflow_cleanup_rounds{4};
+    // In that pass, when a net cannot leave a full cell alone, also lift the
+    // nets filling the full cells next to it and route the overflowing net first.
+    bool overflow_cleanup_blockers{false};
+    size_t overflow_cleanup_group{8};
     size_t v8_tsv_rematch_group_size{6}, v8_tsv_rematch_nets{256};
     double v8_tsv_rematch_seconds{30};
     // V9 mechanisms are independent for same-binary documented-rule ablations.
@@ -146,6 +155,9 @@ struct RouterCounters {
            v7_tsv_candidates{}, v7_tsv_attempted{}, v7_tsv_accepted{}, v7_tsv_rollbacks{},
            v7_tsv_failures{}, v7_tsv_budget_stops{};
     size_t v8_rrr_groups{}, v8_rrr_groups_accepted{}, v8_rrr_groups_rejected{}, v8_rrr_group_nets{};
+    size_t overflow_cleanup_rounds{}, overflow_cleanup_single{}, overflow_cleanup_single_accepted{},
+           overflow_cleanup_joint{}, overflow_cleanup_joint_accepted{}, overflow_cleanup_joint_nets{};
+    double overflow_cleanup_seconds{};
     size_t hotspot_focus_builds{}, hotspot_focus_cells{}, hotspot_focus_owner_nets{};
     double hotspot_focus_seconds{};
     size_t v8_rematch_groups{}, v8_rematch_candidates{}, v8_rematch_accepted{}, v8_rematch_rollbacks{}, v8_rematch_failures{};
@@ -432,6 +444,9 @@ private:
     void optimize_tsv();
     void optimize_v7_tsv();
     void run_hotspot_rrr(int);
+    void run_overflow_cleanup();
+    std::vector<size_t> overflow_blockers(size_t) const;
+    bool joint_rrr_round(const std::vector<size_t>&);
     std::vector<int> select_hotspot_cells(size_t);
     std::vector<NetRoute> via_stack_candidates(size_t,const NetRoute&);
     bool climb_column_congested(int,const NetRoute&,int,int) const;
