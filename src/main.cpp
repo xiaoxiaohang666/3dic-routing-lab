@@ -22,8 +22,8 @@ void usage(const char* p) {
         <<"--v9-adaptive-budget 0|1 (stage allocation by measured gain/time, unified process clock)\n"
         <<"--v8-rrr 0|1 --v8-rrr-group-size N (1..256, default 48; hotspot transactions)\n"
         <<"--hotspot-cell-limit N (0..4096; default 0; opt-in concentrated hotspot selection)\n"
-        <<"--overflow-cleanup-seconds S (0..7200; default 0=off; final pass rerouting each overflowing net alone, time taken from the same deadline)\n"
-        <<"--overflow-cleanup-rounds N (1..64, default 4) --overflow-cleanup-blockers 0|1 (default 0; also lift nets filling full cells next to it)\n"
+        <<"--overflow-cleanup-seconds S (0..7200; default 800 under --model official with the a150-20261029 rules and fast quality, otherwise 0=off; final pass rerouting each overflowing net, time taken from the same deadline)\n"
+        <<"--overflow-cleanup-rounds N (1..64, default 4) --overflow-cleanup-blockers 0|1 (default 1 where the cleanup defaults on, otherwise 0; also lift nets filling full cells next to it)\n"
         <<"--overflow-cleanup-group N (1..32, default 8; most extra nets lifted with one overflowing net)\n"
         <<"--via-stack-radius N (0..3; default 0; local ordinary-via relocation during V8 RRR)\n"
         <<"--climb-escape-radius N (0..8; default 3 under --model official with the a150-20261029 rules and fast quality, otherwise 0; offer a sideways step before a via climb through full cells)\n"
@@ -122,7 +122,7 @@ int main(int argc,char** argv) {
         options.process_started=std::chrono::steady_clock::now();
         std::set<std::string> explicit_v8,explicit_v9;
         std::string rules_profile="a150-20261029",obstacle_scope="interface",objective_profile="documented";
-        bool explicit_rules=false,explicit_scope=false,explicit_track_demand=false,explicit_climb_radius=false;
+        bool explicit_rules=false,explicit_scope=false,explicit_track_demand=false,explicit_climb_radius=false,explicit_cleanup_seconds=false,explicit_cleanup_blockers=false;
         for(int i=1;i<argc;++i) {
             std::string arg=argv[i];if(arg=="--help"||arg=="-h") {usage(argv[0]);return 0;}
             const std::set<std::string> recognized={"--def","--input-def","--lef","--lefs","--thermal-report","--thermal-json",
@@ -151,13 +151,13 @@ int main(int argc,char** argv) {
             } else if(arg=="--overflow-cleanup-seconds") {
                 size_t end=0;const double v=std::stod(value,&end);
                 if(end!=value.size()||!std::isfinite(v)||v<0||v>7200) throw std::runtime_error("overflow-cleanup-seconds must be 0..7200");
-                options.overflow_cleanup_seconds=v;
+                options.overflow_cleanup_seconds=v;explicit_cleanup_seconds=true;
             } else if(arg=="--overflow-cleanup-rounds") {
                 const int v=integer(value);if(v<1||v>64) throw std::runtime_error("overflow-cleanup-rounds must be 1..64");
                 options.overflow_cleanup_rounds=v;
             } else if(arg=="--overflow-cleanup-blockers") {
                 const int v=integer(value);if(v>1) throw std::runtime_error("overflow-cleanup-blockers must be 0 or 1");
-                options.overflow_cleanup_blockers=v;
+                options.overflow_cleanup_blockers=v;explicit_cleanup_blockers=true;
             } else if(arg=="--overflow-cleanup-group") {
                 const int v=integer(value);if(v<1||v>32) throw std::runtime_error("overflow-cleanup-group must be 1..32");
                 options.overflow_cleanup_group=size_t(v);
@@ -502,6 +502,12 @@ int main(int argc,char** argv) {
             options.graph_options.score_20261020=true;
             // The struct default stays 0: other modes refuse a nonzero radius and historical replays must not change.
             if(!explicit_climb_radius&&options.fast_quality&&rules_profile=="a150-20261029") options.climb_escape_radius=3;
+            // Same scope for the end-of-run overflow cleanup: 800 s from the same
+            // deadline, with blocking nets lifted together. Explicit flags win.
+            if(options.fast_quality&&rules_profile=="a150-20261029") {
+                if(!explicit_cleanup_seconds) options.overflow_cleanup_seconds=800;
+                if(!explicit_cleanup_blockers) options.overflow_cleanup_blockers=true;
+            }
         }
         if(options.official_metrics.score_20261020) {
             if(!options.official_model) throw std::runtime_error("20261020 score profile requires --model official");
