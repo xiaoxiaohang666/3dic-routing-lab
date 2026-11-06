@@ -191,6 +191,10 @@ if(BUILD_TESTING)
     target_link_libraries(terminal_parser_tests PRIVATE eda_core)
     add_test(NAME terminal_parser COMMAND terminal_parser_tests
         "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/terminal-parser-artifacts")
+    add_executable(parser_tolerance_tests tests/parser_tolerance_tests.cpp)
+    target_link_libraries(parser_tolerance_tests PRIVATE eda_core)
+    add_test(NAME parser_tolerance COMMAND parser_tolerance_tests
+        "${CMAKE_CURRENT_BINARY_DIR}/parser-tolerance-artifacts")
     add_executable(cached_metrics_tests tests/cached_metrics_tests.cpp)
     target_link_libraries(cached_metrics_tests PRIVATE eda_core)
     add_test(NAME cached_metrics COMMAND cached_metrics_tests
