@@ -14,7 +14,10 @@ instead of a per-case G. Later options override these values, for example an exp
 cleanup (800 s) and the end wirelength polish (1200 s) share the tail of the budget
 (--overflow-cleanup-seconds 0 / --wirelength-polish-seconds 0 turn them off). Every initial net also gets
 the bounded maze search (20000 expansions, 0.03 s; --initial-maze-expansions 0 turns it off).
-These are the settings of the 2026-11-06 d04 three-case run (job e584a705), except G.
+If overflow is left after the polish, the cleanup runs once more (300 s from the same tail;
+--overflow-cleanup-final-seconds 0 turns it off; it never runs with the polish off).
+These are the settings of the 2026-11-06 d04 three-case run (job e584a705), except G, plus
+that final cleanup (d23 on 005).
 HELP
     exit 0
 fi
@@ -24,7 +27,7 @@ exec bash "$ROOT/scripts/run_a150_20261029.sh" \
     --rrr-reserved-seconds 2000 --rrr-rounds 64 \
     --v7-rrr-net-limit 32768 --rrr-net-limit 8192 \
     --congestion-target-q 30 --future-tsv-reservation 1 --climb-escape-radius 3 \
-    --overflow-cleanup-seconds 800 --overflow-cleanup-blockers 1 \
+    --overflow-cleanup-seconds 800 --overflow-cleanup-blockers 1 --overflow-cleanup-final-seconds 300 \
     --initial-maze-expansions 20000 --initial-maze-seconds 0.03 --wirelength-polish-seconds 1200 "$@" \
     --model official --score-profile 20261020 \
     --resource-profile documented --rules-profile a150-20261029 \

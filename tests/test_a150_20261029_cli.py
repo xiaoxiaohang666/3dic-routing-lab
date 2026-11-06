@@ -82,6 +82,9 @@ class A150Cli(unittest.TestCase):
    self.assertEqual(packaged['options']['climb_escape_radius'],3)
    self.assertEqual(packaged['options']['overflow_cleanup_seconds'],800)
    self.assertEqual(packaged['options']['overflow_cleanup_blockers'],1)
+   # One more cleanup after the polish (d23), without the same-die blocker groups.
+   self.assertAlmostEqual(packaged['options']['overflow_cleanup_final_seconds'],300)
+   self.assertFalse(packaged['options']['overflow_cleanup_same_die_blockers'])
    self.assertEqual(packaged['options']['rrr_rounds'],64)
    self.assertEqual(packaged['options']['rrr_net_limit'],8192)
    self.assertEqual(packaged['options']['v7_rrr_net_limit'],32768)
