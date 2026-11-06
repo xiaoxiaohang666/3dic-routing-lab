@@ -17,6 +17,7 @@
 #include <iostream>
 #include <map>
 #include <set>
+#include <queue>
 #include <unordered_map>
 using namespace eda;
 namespace fs=std::filesystem;
@@ -130,11 +131,11 @@ int main(int argc,char** argv) {
     }
     // Net-in-cell table.
     std::ofstream nets(out/"cell_nets.csv");nets.exceptions(std::ios::badbit|std::ios::failbit);nets<<std::setprecision(10);
-    nets<<"layer,col,row,net,pins,cross_die,amount,shape,run_cells,own_pin_this_layer,own_pin_this_column,tsv_dist,bbox_hp,shift_run_room,other_layer_run_room,stack_move1_room\n";
+    nets<<"layer,col,row,net,pins,cross_die,amount,shape,run_cells,own_pin_this_layer,own_pin_this_column,tsv_dist,bbox_hp,shift_run_room,other_layer_run_room,stack_move1_room,split_parts,reroute_found,reroute_steps,reroute_vias\n";
     // One JSON line per (cell, net): pins (access point cell, shape cells), exempt cells, the net's Guide in cells,
     // and spare tracks around every Guide cell, so the choice can be replayed by hand.
     std::ofstream detail(out/"cell_nets_detail.jsonl");detail.exceptions(std::ios::badbit|std::ios::failbit);detail<<std::setprecision(10);
-    std::map<std::string,Count> shape,pin_rel,fix_kind,tsv_dist_k,cross;
+    std::map<std::string,Count> shape,pin_rel,fix_kind,tsv_dist_k,cross,reroute_k;
     for(int node:over_nodes) {
         const int l=graph.layer(node),c=graph.col(node),r=graph.row(node);
         const auto& list=cell_nets[node];
@@ -180,6 +181,45 @@ int main(int argc,char** argv) {
                 }
             }
             int tdist=-1;if(net_tsv[i].first>=0) tdist=std::max(std::abs(net_tsv[i].first-c),std::abs(net_tsv[i].second-r));
+            // Single-net reroute check: drop this cell from the net, then search from the smallest
+            // remaining piece to the rest of the net through cells that still have a free track
+            // (the net's own cells are free), within 20 cells, on the same die, preferred directions only.
+            int parts=0,found=0,steps=-1,vias=-1;
+            {
+                std::set<int> own(pins.begin(),pins.end());
+                for(auto [gn,ga]:net_demand[i]) {(void)ga;own.insert(gn);}
+                own.erase(node);
+                std::unordered_map<int,int> comp;std::vector<std::vector<int>> pieces;
+                for(int s0:own) {
+                    if(comp.count(s0)) continue;
+                    pieces.emplace_back();std::vector<int> st{s0};comp[s0]=int(pieces.size())-1;
+                    while(!st.empty()){int u=st.back();st.pop_back();pieces.back().push_back(u);
+                        for(int v:graph.neighbors(u)) if(own.count(v)&&!comp.count(v)&&die_low(graph.layer(v))==die_low(graph.layer(u))){comp[v]=comp[u];st.push_back(v);}}
+                }
+                parts=int(pieces.size());
+                if(parts<=1) {found=1;steps=0;vias=0;}
+                else {
+                    size_t src=0;for(size_t k=1;k<pieces.size();++k) if(pieces[k].size()<pieces[src].size()) src=k;
+                    using It=std::tuple<int,int,int>;std::priority_queue<It,std::vector<It>,std::greater<It>> open;
+                    std::unordered_map<int,std::pair<int,int>> best;  // cost, vias
+                    for(int u:pieces[src]){best[u]={0,0};open.push({0,0,u});}
+                    while(!open.empty()) {
+                        auto [cost,vv,u]=open.top();open.pop();
+                        if(best[u].first<cost) continue;
+                        if(own.count(u)&&comp[u]!=int(src)){found=1;steps=cost;vias=vv;break;}
+                        for(int v:graph.neighbors(u)) {
+                            if(v==node||die_low(graph.layer(v))!=die_low(l)) continue;
+                            if(std::abs(graph.col(v)-c)>20||std::abs(graph.row(v)-r)>20) continue;
+                            if(!own.count(v)&&spare(v)<1) continue;
+                            const int via=graph.layer(v)!=graph.layer(u);
+                            const int nc=cost+(via?3:1);
+                            auto it=best.find(v);
+                            if(it==best.end()||nc<it->second.first){best[v]={nc,vv+via};open.push({nc,vv+via,v});}
+                        }
+                    }
+                }
+            }
+            add(reroute_k,"M"+std::to_string(l)+(parts<=1?":not_a_bridge":found?(steps<=12?":single_net_detour_le12":":single_net_detour_gt12"):":no_single_net_detour"),share);
             {
                 detail<<"{\"cell\":["<<l<<','<<c<<','<<r<<"],\"net\":\""<<net.name<<"\",\"pins\":[";
                 for(size_t k=0;k<net.pins.size();++k) {
@@ -202,7 +242,7 @@ int main(int argc,char** argv) {
                 detail<<"]}\n";
             }
             nets<<l<<','<<c<<','<<r<<','<<net.name<<','<<net.pins.size()<<','<<crossdie<<','<<amount<<','<<sh<<','<<run_cells<<','<<pin_layer<<','<<pin_col<<','<<tdist<<','
-                <<(pc1-pc0)+(pr1-pr0)<<','<<shift_ok<<','<<layer_ok<<','<<stack_ok<<'\n';
+                <<(pc1-pc0)+(pr1-pr0)<<','<<shift_ok<<','<<layer_ok<<','<<stack_ok<<','<<parts<<','<<found<<','<<steps<<','<<vias<<'\n';
             const std::string L="M"+std::to_string(l);
             add(shape,L+":"+sh,share);
             add(pin_rel,L+(pin_layer?":own_pin_on_this_layer":pin_col?":own_pin_other_layer_same_cell":":no_own_pin_in_cell"),share);
@@ -216,7 +256,7 @@ int main(int argc,char** argv) {
      <<"\",\"Q\":"<<total_q<<",\"overflow\":"<<total_overflow<<",\"overflow_cells\":"<<over_nodes.size()<<",\"tsv_cells\":"<<tsv_cells.size()<<",\n";
     dump(s,"cells_by_layer",by_layer);s<<",\n";dump(s,"cells_by_fixed_share",fixed_level);s<<",\n";dump(s,"cells_by_tsv_nearby",tsv_zone);s<<",\n";
     dump(s,"cells_by_room_in_8_neighbours",neigh);s<<",\n";dump(s,"nets_by_shape",shape);s<<",\n";dump(s,"nets_by_own_pin",pin_rel);s<<",\n";
-    dump(s,"nets_by_simple_room",fix_kind);s<<",\n";dump(s,"nets_cross_die",cross);s<<",\n";dump(s,"cross_die_nets_by_tsv_distance",tsv_dist_k);s<<"}\n";
+    dump(s,"nets_by_simple_room",fix_kind);s<<",\n";dump(s,"nets_cross_die",cross);s<<",\n";dump(s,"cross_die_nets_by_tsv_distance",tsv_dist_k);s<<",\n";dump(s,"single_net_reroute",reroute_k);s<<"}\n";
     std::cout<<"PASS Q="<<total_q<<" overflow="<<total_overflow<<" cells="<<over_nodes.size()<<" tsv_cells="<<tsv_cells.size()<<std::endl;
     return 0;
  } catch(const std::exception& e) {std::cerr<<"diagnose_overflow_cells: "<<e.what()<<'\n';return 1;}
