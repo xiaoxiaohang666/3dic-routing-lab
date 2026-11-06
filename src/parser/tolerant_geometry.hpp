@@ -69,6 +69,30 @@ inline std::vector<Point> read_lef_polygon(TextTokens& t) {
     return points;
 }
 
+// The official scorer reads layer numbers with (?:Metal|M)(\d+), case-insensitive;
+// the router uses metal1..metal20. Map those spellings onto metalN; leave others.
+inline std::string canonical_layer_name(const std::string& name) {
+    size_t digits = 0;
+    if (name.size() > 5 && (name[0] | 32) == 'm' && (name[1] | 32) == 'e' && (name[2] | 32) == 't' &&
+        (name[3] | 32) == 'a' && (name[4] | 32) == 'l') digits = 5;
+    else if (name.size() > 1 && (name[0] | 32) == 'm') digits = 1;
+    else return name;
+    if (name.size() - digits > 2) return name;
+    int value = 0;
+    for (size_t i = digits; i < name.size(); ++i) {
+        if (name[i] < '0' || name[i] > '9') return name;
+        value = value * 10 + (name[i] - '0');
+    }
+    if (value < 1 || value > 20 || name[digits] == '0') return name;
+    return "metal" + std::to_string(value);
+}
+inline std::string read_layer_name(TextTokens& t, ParseWarnings& w) {
+    const auto raw = t.take();
+    const auto name = canonical_layer_name(raw);
+    if (name != raw) w.add("layer name mapped to metalN", raw + " -> " + name);
+    return name;
+}
+
 // After "LAYER name": skips optional qualifiers (SPACING, DESIGNRULEWIDTH,
 // EXCEPTPGNET, MASK, ...) through the closing ';'.
 inline void skip_to_semicolon(TextTokens& t) {

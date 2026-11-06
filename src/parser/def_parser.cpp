@@ -130,7 +130,7 @@ bool DefParser::parse(const std::string& def_file_path, const LefParser& lef_par
                 t.expect("LAYER");
                 bool any_layer = false;
                 while (t.peek() != ";") {
-                    const auto layer = t.take();
+                    const auto layer = read_layer_name(t, w);
                     any_layer = true;
                     if (!get_layer_index(layer) || lef_parser.get_layer_direction(layer) == Direction::UNKNOWN) {
                         w.add("TRACKS on a non-routing layer ignored", layer);
@@ -203,7 +203,7 @@ bool DefParser::parse(const std::string& def_file_path, const LefParser& lef_par
                                 if (!ports.empty()) w.add("multiple IO PORTs", name);
                                 ports.emplace_back();
                             } else if (property == "LAYER") {
-                                const auto layer = t.take();
+                                const auto layer = read_layer_name(t, w);
                                 while (t.peek() != "(") {  // MASK n, SPACING d, DESIGNRULEWIDTH d
                                     if (t.peek() == "+" || t.peek() == ";") throw std::runtime_error("IO LAYER without rectangle " + name);
                                     t.take();
@@ -212,7 +212,7 @@ bool DefParser::parse(const std::string& def_file_path, const LefParser& lef_par
                                 if (b.x <= a.x || b.y <= a.y) throw std::runtime_error("invalid IO rectangle " + name);
                                 add_shape(layer, Rect(a.x, a.y, b.x, b.y));
                             } else if (property == "POLYGON") {
-                                const auto layer = t.take();
+                                const auto layer = read_layer_name(t, w);
                                 while (t.peek() != "(") {
                                     if (t.peek() == "+" || t.peek() == ";") throw std::runtime_error("IO POLYGON without points " + name);
                                     t.take();
