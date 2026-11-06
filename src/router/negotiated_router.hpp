@@ -308,6 +308,11 @@ private:
     std::vector<NetRoute> routes_;
     std::vector<double> pre_tsv_lengths_;
     GuideMap guides_;
+    // Last fully validated complete solution; exported if a later stage fails.
+    GuideMap safe_guides_;
+    bool safe_available_{false};
+    bool fallback_export_{false};
+    void save_safe_guides();
     std::vector<int> demand_;
     // Search-only promises: actual Guide demand and resource owners remain separate.
     std::unordered_map<int,int> future_tsv_demand_;

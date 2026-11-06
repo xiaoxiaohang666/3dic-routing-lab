@@ -683,7 +683,9 @@ int main(int argc,char** argv) {
             // Resolve the TSV policy before allocating a potentially huge graph.
             eda::TsvPolicy::preflight(def,lef,options.tsv_policy);
             eda::NegotiatedRouter router(def,lef,thermal,options);
-            if(!router.route_all()||!router.export_guide(output)||(!stats.empty()&&!router.export_stats(stats))) return 1;
+            if(!router.route_all()||!router.export_guide(output)) return 1;
+            // The Guide is the deliverable; a failed statistics file must not discard it.
+            if(!stats.empty()&&!router.export_stats(stats)) std::cerr<<"[WARN] statistics export failed: "<<stats<<"\n";
         }
         std::cout<<"[SUCCESS] Guide exported: "<<output<<"\n";return 0;
     } catch(const std::exception& e) {std::cerr<<"[ERROR] "<<e.what()<<"\n";return 1;}
