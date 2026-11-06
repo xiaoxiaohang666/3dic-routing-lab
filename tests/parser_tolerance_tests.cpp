@@ -148,6 +148,12 @@ void test_still_rejected() {
             "record count mismatch still rejected");
     require(!def.parse(file("dup.def", head + "NETS 2 ; - n ( u A ) ; - n ( u B ) ; END NETS END DESIGN"), lef),
             "duplicate net still rejected");
+    const std::string far =
+        "UNITS DISTANCE MICRONS 10 ; DIEAREA ( 0 0 ) ( 1000 1000 ) ; "
+        "GCELLGRID X 0 DO 11 STEP 100 ; GCELLGRID Y 0 DO 11 STEP 100 ; "
+        "COMPONENTS 1 ; - u core + PLACED ( 1200 200 ) N ; END COMPONENTS "
+        "NETS 1 ; - n ( u A ) ; END NETS END DESIGN";
+    require(!def.parse(file("far.def", far), lef), "pin more than one GCell outside the die still rejected");
 }
 } // namespace
 

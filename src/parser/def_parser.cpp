@@ -402,9 +402,13 @@ bool DefParser::parse(const std::string& def_file_path, const LefParser& lef_par
         for (auto& net : nets_) {
             for (auto& pin : net.pins) {
                 pin.gcell_col = grid_.get_col(pin.coord.x); pin.gcell_row = grid_.get_row(pin.coord.y);
+                const double margin_x = (grid_.x_lines.back() - grid_.x_lines.front()) / grid_.cols;
+                const double margin_y = (grid_.y_lines.back() - grid_.y_lines.front()) / grid_.rows;
                 if (pin.layer_idx && (pin.gcell_col < 0 || pin.gcell_row < 0) &&
-                    std::isfinite(pin.coord.x) && std::isfinite(pin.coord.y)) {
-                    // A terminal centre just outside the die maps to the nearest boundary GCell.
+                    pin.coord.x >= grid_.x_lines.front() - margin_x && pin.coord.x <= grid_.x_lines.back() + margin_x &&
+                    pin.coord.y >= grid_.y_lines.front() - margin_y && pin.coord.y <= grid_.y_lines.back() + margin_y) {
+                    // A terminal centre at most one GCell outside the die maps to the nearest
+                    // boundary GCell; anything farther is a broken input and still rejected.
                     w.add("pin outside the die clamped to its edge", pin.name);
                     pin.coord.x = std::clamp(pin.coord.x, grid_.x_lines.front(), grid_.x_lines.back());
                     pin.coord.y = std::clamp(pin.coord.y, grid_.y_lines.front(), grid_.y_lines.back());
