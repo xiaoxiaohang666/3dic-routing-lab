@@ -63,6 +63,12 @@ struct RouterOptions {
     // complete score improves. TSV cells never move.
     double wirelength_polish_seconds{0};
     int wirelength_polish_rounds{2};
+    // In that pass, when a net cannot shorten alone, find its shortest path
+    // with other nets hidden from the search, lift the nets that fill that
+    // path's cells (at most the group size) together with it, route the net
+    // first and keep the group only when the complete score improves.
+    bool wirelength_polish_blockers{false};
+    size_t wirelength_polish_group{8};
     // Initial routing of a large design normally keeps the L/Z template
     // paths. With a nonzero budget every initial net also gets the bounded
     // maze search (templates stay the incumbent; only a cheaper path under the
@@ -158,6 +164,9 @@ struct RouterCounters {
     double overflow_cleanup_seconds{};
     size_t wirelength_polish_rounds{}, wirelength_polish_attempted{}, wirelength_polish_accepted{};
     double wirelength_polish_seconds{}, wirelength_polish_gain_dbu{};
+    size_t wirelength_polish_free_searches{}, wirelength_polish_joint{}, wirelength_polish_joint_accepted{},
+           wirelength_polish_joint_nets{};
+    double wirelength_polish_joint_gain_dbu{};
     size_t initial_maze_nets{};
     double initial_maze_seconds{};
     size_t hotspot_focus_builds{}, hotspot_focus_cells{}, hotspot_focus_owner_nets{};
@@ -317,6 +326,9 @@ private:
     void prepare_tsv_reservations(const std::vector<int>&);
     void update_tsv_reservation(size_t,int);
     int search_cell_demand(int) const;
+    // While set, the path search sees no route or reserved TSV demand: only
+    // fixed PIN/OBS can fill a cell. Never set outside free_path().
+    bool ignore_route_demand_{false};
     void route_initial_net(size_t,int);
     std::unordered_map<EdgeKey,int> usage_;
     // Reverse ownership exists only for occupied cells, not every graph state.
@@ -441,6 +453,8 @@ private:
     void run_overflow_cleanup();
     void run_wirelength_polish();
     std::vector<size_t> overflow_blockers(size_t) const;
+    NetRoute free_path(size_t);
+    std::vector<size_t> detour_blockers(size_t);
     bool joint_rrr_round(const std::vector<size_t>&);
     std::vector<int> select_hotspot_cells(size_t);
     std::vector<NetRoute> via_stack_candidates(size_t,const NetRoute&);

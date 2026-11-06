@@ -175,6 +175,103 @@ struct HotspotRrrTestAccess {
                 r.options_.checkpoint_amortization==amortization,"polish restores the shared audit schedule");
         exact(r);
     }
+    // Replace a same-die net's route by an explicit chain of cells.
+    static void place(NegotiatedRouter& r,size_t i,const std::vector<int>& path) {
+        r.account(i,r.routes_[i],-1);
+        auto trial=r.build_candidate(i,-1,0);
+        for(const auto& access:trial.accesses) require(access.vias==0,"blocked fixture pins need no access via");
+        trial.nodes.clear();trial.edges.clear();
+        for(size_t k=0;k<path.size();++k) {
+            require(r.graph_.legal_node(path[k]),"blocked fixture path cell exists");
+            trial.nodes.insert(path[k]);if(k) trial.edges.insert(route_edge(path[k-1],path[k]));
+        }
+        r.encode(i,trial);r.routes_[i]=std::move(trial);r.account(i,r.routes_[i],1);
+    }
+    // Row 0: net 3 has M9 pins in columns 0 and 5, net 4 has M8 pins in
+    // columns 1 and 4, net 5 has M7 pins in columns 1 and 4; M7 and M9 hold
+    // one track per GCell. Net 4 sits on M9 and net 5 on M7, both on their
+    // shortest paths, so net 3 can only take the row-1 detour (four vias). Net 4
+    // can move to row 1 for two more GCells, which frees M9 row 0 for net 3.
+    // Neither move helps alone; together they shorten the design.
+    static void polish_blockers(NegotiatedRouter& r) {
+        require(r.route_all(),"blocked fixture initial route");
+        r.options_.local_repair=false;r.options_.pin_local=false;
+        r.options_.rrr_score_aware=true;r.options_.v7_rrr=true;
+        const auto at=[&](int c,int layer,int row=0){return r.graph_.node(c,row,layer);};
+        place(r,4,{at(1,8),at(1,9),at(2,9),at(3,9),at(4,9),at(4,8)});
+        place(r,5,{at(1,7),at(2,7),at(3,7),at(4,7)});
+        place(r,3,{at(0,9),at(0,8),at(0,8,1),at(0,9,1),at(1,9,1),at(2,9,1),at(3,9,1),at(4,9,1),at(5,9,1),
+                   at(5,8,1),at(5,8),at(5,9)});
+        const auto show=[&](const char* stage) {
+            for(size_t i=3;i<r.routes_.size();++i) {
+                std::cout<<"[BLOCKED_FIXTURE] "<<stage<<" net="<<i<<" wirelength="<<r.routes_[i].measured.wirelength
+                         <<" planar="<<r.routes_[i].measured.planar_wirelength<<" vias="<<r.routes_[i].vias<<" guides=";
+                for(const auto& g:r.routes_[i].guides) std::cout<<g.layer<<':'<<g.x1<<','<<g.y1<<','<<g.x2<<','<<g.y2<<' ';
+                std::cout<<'\n';
+            }
+        };
+        r.best_metrics_=r.measure();exact(r);show("placed");
+        require(r.graph_.official_capacity(at(2,9))==1 && r.graph_.official_capacity(at(2,7))==1 && r.graph_.official_obstacle_demand(at(2,9))==0,
+                "blocked fixture row has one free track per GCell");
+        // Hiding route demand only changes what the search sees.
+        r.ignore_route_demand_=true;
+        require(r.search_cell_demand(at(2,9))==0,"hidden route demand reads as zero");
+        r.ignore_route_demand_=false;
+        require(r.search_cell_demand(at(2,9))>=1,"route demand is visible again");
+        // The blocker query finds net 4, leaves every route and ledger alone and
+        // puts the search state back.
+        const auto present=r.present_;const auto history=r.history_scale_;
+        r.present_=1;r.history_scale_=0;
+        const auto checkpoint=geometry(r.routes_);const auto demand=r.demand_;
+        const auto cells=r.cell_nets_;const auto edges=r.edge_nets_;const auto stable=r.best_metrics_;
+        const auto searches=r.counters_.wirelength_polish_free_searches;
+        const auto short_path=r.free_path(3);
+        require(short_path.measured.wirelength+1e-9<r.routes_[3].measured.wirelength,"free path is shorter than the detour");
+        require(r.detour_blockers(3)==std::vector<size_t>{4},"the net filling the short path is its blocker");
+        for(size_t i=3;i<r.routes_.size();++i) {
+            const auto path=r.free_path(i);const auto b=r.detour_blockers(i);
+            std::cout<<"[BLOCKED_FIXTURE] free net="<<i<<" wirelength="<<path.measured.wirelength<<" guides=";
+            for(const auto& g:path.guides) std::cout<<g.layer<<':'<<g.x1<<','<<g.y1<<','<<g.x2<<','<<g.y2<<' ';
+            std::cout<<" blockers=";for(size_t k:b) std::cout<<k<<' ';std::cout<<'\n';
+        }
+        r.options_.wirelength_polish_group=1;
+        for(size_t i=0;i<r.routes_.size();++i) {
+            const auto b=r.detour_blockers(i);
+            require(b.size()<=1 && std::find(b.begin(),b.end(),i)==b.end(),"blockers exclude the net and respect the cap");
+        }
+        r.options_.wirelength_polish_group=8;
+        require(r.counters_.wirelength_polish_free_searches>searches,"free searches are counted");
+        require(!r.ignore_route_demand_ && !r.v7_refinement_active_ && r.history_scale_==0,"blocker query restores the search state");
+        require(geometry(r.routes_)==checkpoint && r.demand_==demand && r.cell_nets_==cells && r.edge_nets_==edges,
+                "blocker query changes no route, demand or owner");
+        near(r.best_metrics_.guide.quality,stable.guide.quality,"blocker query keeps the incumbent score");
+        r.present_=present;r.history_scale_=history;exact(r);
+        // Single moves alone cannot shorten net 3.
+        const auto before=r.best_metrics_;const auto detour=r.routes_[3].measured.wirelength;
+        const auto deadline=r.deadline_;const auto maze=r.options_.v7_rrr_astar_net_limit;const auto scope=r.v7_scope_limit_;
+        std::vector<std::vector<int>> tsv;for(const auto& route:r.routes_) tsv.push_back(route.measured.tsv_cells);
+        r.options_.wirelength_polish_rounds=2;r.options_.wirelength_polish_blockers=false;
+        r.run_wirelength_polish();show("single");
+        require(r.counters_.wirelength_polish_joint==0,"no group move while the switch is off");
+        require(std::abs(r.routes_[3].measured.wirelength-detour)<=1e-9,"single moves keep the blocked detour");
+        exact(r);
+        // With the switch on, the group move lifts both, routes net 3 first and
+        // keeps the result only because the exact score is higher.
+        const auto single=r.best_metrics_;
+        r.options_.wirelength_polish_blockers=true;
+        r.run_wirelength_polish();show("group");
+        require(r.counters_.wirelength_polish_joint>0 && r.counters_.wirelength_polish_joint_accepted>0 &&
+                r.counters_.wirelength_polish_joint_nets>=2*r.counters_.wirelength_polish_joint,"blocked net gets a kept group move");
+        require(r.counters_.wirelength_polish_joint_gain_dbu>0,"group move gain is counted");
+        require(r.routes_[3].measured.wirelength+1e-9<detour,"group move shortens the blocked net");
+        require(r.best_metrics_.guide.quality>single.guide.quality+1e-10 && r.best_metrics_.guide.quality>before.guide.quality,
+                "group move raises exact quality");
+        for(size_t i=0;i<r.routes_.size();++i) require(r.routes_[i].measured.tsv_cells==tsv[i],"group move keeps every TSV cell");
+        require(r.deadline_==deadline && r.options_.v7_rrr_astar_net_limit==maze && r.v7_scope_limit_==scope &&
+                !r.v7_refinement_active_ && !r.force_rrr_maze_ && !r.ignore_route_demand_ && !r.v9_rrr_checkpoint_active_,
+                "polish with blockers restores search settings and ends its checkpoint");
+        exact(r);
+    }
     static void initial_maze(NegotiatedRouter& r) {
         const auto expansions=r.options_.v7_rrr_astar_expansions;
         require(r.route_all(),"initial maze route");
@@ -447,7 +544,8 @@ int main(int argc,char** argv) {
     try {
         if(argc!=3) throw std::runtime_error("hotspot_rrr_tests OUTPUT_DIRECTORY OFFICIAL_RUNTIME");
         const fs::path directory=argv[1];fs::create_directories(directory);
-        std::string tech,def="UNITS DISTANCE MICRONS 10 ; DIEAREA ( 0 0 ) ( 600 600 ) ; GCELLGRID X 0 DO 7 STEP 100 ; GCELLGRID Y 0 DO 7 STEP 100 ; ";
+        const std::string header="UNITS DISTANCE MICRONS 10 ; DIEAREA ( 0 0 ) ( 600 600 ) ; GCELLGRID X 0 DO 7 STEP 100 ; GCELLGRID Y 0 DO 7 STEP 100 ; ";
+        std::string tech,def=header;
         for(int layer=1;layer<=20;++layer) {
             const auto name=get_layer_name(layer);
             tech+="LAYER "+name+" TYPE ROUTING ; DIRECTION "+(layer%2?"HORIZONTAL":"VERTICAL")+" ; WIDTH 0.2 ; END "+name+"\n";
@@ -455,9 +553,10 @@ int main(int argc,char** argv) {
             def+="TRACKS X "+track+" LAYER "+name+" ; TRACKS Y "+track+" LAYER "+name+" ; ";
         }
         def+="COMPONENTS 0 ; END COMPONENTS PINS 13 ; ";
-        auto pin=[&](std::string name,int layer,int x,int y) {
-            def+="- "+name+" + LAYER metal"+std::to_string(layer)+" ( -1 -1 ) ( 1 1 ) + FIXED ( "+std::to_string(x)+" "+std::to_string(y)+" ) N ; ";
+        auto pin_in=[](std::string& out,std::string name,int layer,int x,int y) {
+            out+="- "+name+" + LAYER metal"+std::to_string(layer)+" ( -1 -1 ) ( 1 1 ) + FIXED ( "+std::to_string(x)+" "+std::to_string(y)+" ) N ; ";
         };
+        auto pin=[&](std::string name,int layer,int x,int y) {pin_in(def,name,layer,x,y);};
         for(int i=0;i<3;++i) {pin("a"+std::to_string(i),1,50+i*100,250);pin("b"+std::to_string(i),1,450,350+i*100);pin("c"+std::to_string(i),12,150+i*100,450);}
         pin("local_a",1,50,50);pin("local_b",1,550,550);pin("local_c",1,50,50);pin("local_d",1,550,550);
         def+="END PINS NETS 5 ; ";
@@ -465,6 +564,22 @@ int main(int argc,char** argv) {
         def+="- local ( PIN local_a ) ( PIN local_b ) ; - duplicate ( PIN local_c ) ( PIN local_d ) ; END NETS END DESIGN";
         LefParser lef;require(lef.parse(write(directory/"fixture.lef",tech)),"parse LEF");
         DefParser parsed;require(parsed.parse(write(directory/"fixture.def",def),lef,DefGridMapping::OFFICIAL_FULL),"parse DEF");
+        // Same grid and cross nets; three same-die nets contend for row 0 of M7 and M9.
+        std::string blocked=header;
+        for(int layer=1;layer<=20;++layer) {
+            const auto name=get_layer_name(layer);
+            const std::string track=layer==7||layer==9?"5 DO 6 STEP 100":"5 DO 60 STEP 10";
+            blocked+="TRACKS X "+track+" LAYER "+name+" ; TRACKS Y "+track+" LAYER "+name+" ; ";
+        }
+        blocked+="COMPONENTS 0 ; END COMPONENTS PINS 15 ; ";
+        for(int i=0;i<3;++i) {pin_in(blocked,"a"+std::to_string(i),1,50+i*100,250);pin_in(blocked,"b"+std::to_string(i),1,450,350+i*100);
+            pin_in(blocked,"c"+std::to_string(i),12,150+i*100,450);}
+        pin_in(blocked,"long_a",9,50,50);pin_in(blocked,"long_b",9,550,50);pin_in(blocked,"block_a",8,150,50);pin_in(blocked,"block_b",8,450,50);
+        pin_in(blocked,"wall_a",7,150,50);pin_in(blocked,"wall_b",7,450,50);
+        blocked+="END PINS NETS 6 ; ";
+        for(int i=0;i<3;++i) blocked+="- cross"+std::to_string(i)+" ( PIN a"+std::to_string(i)+" ) ( PIN b"+std::to_string(i)+" ) ( PIN c"+std::to_string(i)+" ) ; ";
+        blocked+="- long ( PIN long_a ) ( PIN long_b ) ; - blocker ( PIN block_a ) ( PIN block_b ) ; - wall ( PIN wall_a ) ( PIN wall_b ) ; END NETS END DESIGN";
+        DefParser blocked_def;require(blocked_def.parse(write(directory/"blocked.def",blocked),lef,DefGridMapping::OFFICIAL_FULL),"parse blocked DEF");
         std::ostringstream heat;heat<<"{\"meta\":{\"ambientTemp\":25},\"nodes\":[";
         for(int y=0;y<6;++y) for(int x=0;x<6;++x) {
             if(x||y) heat<<',';
@@ -493,6 +608,11 @@ int main(int argc,char** argv) {
             NegotiatedRouter cleanup_checkpointed(parsed,lef,thermal,options);HotspotRrrTestAccess::cleanup(cleanup_checkpointed);
             NegotiatedRouter polish_plain(parsed,lef,thermal,plain);HotspotRrrTestAccess::polish(polish_plain);
             NegotiatedRouter polish_checkpointed(parsed,lef,thermal,options);HotspotRrrTestAccess::polish(polish_checkpointed);
+            // Full squared overflow, so entering the filled row costs more than the detour.
+            auto contended=plain;contended.graph_options.congestion_overflow_scale=1;
+            NegotiatedRouter blockers_plain(blocked_def,lef,thermal,contended);HotspotRrrTestAccess::polish_blockers(blockers_plain);
+            contended.v9_incremental_rrr=true;
+            NegotiatedRouter blockers_checkpointed(blocked_def,lef,thermal,contended);HotspotRrrTestAccess::polish_blockers(blockers_checkpointed);
             auto maze=options;maze.initial_maze_expansions=20000;maze.initial_maze_seconds=0.5;
             NegotiatedRouter initial_maze(parsed,lef,thermal,maze);HotspotRrrTestAccess::initial_maze(initial_maze);
         }

@@ -27,6 +27,8 @@ void usage(const char* p) {
         <<"--overflow-cleanup-group N (1..32, default 8; most extra nets lifted with one overflowing net)\n"
         <<"--wirelength-polish-seconds S (0..36000; default 0=off; after the overflow cleanup, reroute every net alone with the maze search, longest excess first, keep only complete-score gains)\n"
         <<"--wirelength-polish-rounds N (1..64, default 2)\n"
+        <<"--wirelength-polish-blockers 0|1 (default 0; in that pass, when a net cannot shorten alone, also lift the nets filling its shortest path and route it first)\n"
+        <<"--wirelength-polish-group N (1..32, default 8; most extra nets lifted with one net)\n"
         <<"--initial-maze-expansions N (0..10000000; default 0=off) --initial-maze-seconds S (0..60, per net; both nonzero turn it on: every initial net also gets the bounded maze search, templates stay the incumbent)\n"
         <<"--via-stack-radius N (0..3; default 0; local ordinary-via relocation during V8 RRR)\n"
         <<"--climb-escape-radius N (0..8; default 3 under --model official with the a150-20261029 rules and fast quality, otherwise 0; offer a sideways step before a via climb through full cells)\n"
@@ -139,7 +141,7 @@ int main(int argc,char** argv) {
                 "--future-tsv-reservation","--resource-local-rrr","--joint-layer-recovery","--resource-candidate-pool","--thermal-coverage","--tsv-index-reuse","--checkpoint-reuse","--checkpoint-amortization"};
             const std::set<std::string> low_layer_options={"--low-layer-mask","--low-layer-seconds","--low-layer-max-attempts","--rrr-reserved-seconds"};
             const std::set<std::string> tree_move_options={"--tsv-tree-move","--tsv-tree-move-seconds","--tsv-tree-move-expansions"};
-            if(arg!="--recovery-global-wirelength"&&arg!="--via-stack-radius"&&arg!="--climb-escape-radius"&&arg!="--hotspot-cell-limit"&&arg!="--overflow-cleanup-seconds"&&arg!="--overflow-cleanup-rounds"&&arg!="--overflow-cleanup-blockers"&&arg!="--overflow-cleanup-group"&&arg!="--wirelength-polish-seconds"&&arg!="--wirelength-polish-rounds"&&arg!="--initial-maze-expansions"&&arg!="--initial-maze-seconds"&&arg!="--objective-profile"&&!tree_move_options.count(arg)&&!low_layer_options.count(arg)&&!landing_options.count(arg)&&!v9_options.count(arg)&&!v8_options.count(arg)&&!recognized.count(arg)&&!recovery_options.count(arg)&&!v5_options.count(arg)&&!v7_options.count(arg)&&arg!="--score-profile") throw std::runtime_error("unknown option: "+arg);
+            if(arg!="--recovery-global-wirelength"&&arg!="--via-stack-radius"&&arg!="--climb-escape-radius"&&arg!="--hotspot-cell-limit"&&arg!="--overflow-cleanup-seconds"&&arg!="--overflow-cleanup-rounds"&&arg!="--overflow-cleanup-blockers"&&arg!="--overflow-cleanup-group"&&arg!="--wirelength-polish-seconds"&&arg!="--wirelength-polish-rounds"&&arg!="--wirelength-polish-blockers"&&arg!="--wirelength-polish-group"&&arg!="--initial-maze-expansions"&&arg!="--initial-maze-seconds"&&arg!="--objective-profile"&&!tree_move_options.count(arg)&&!low_layer_options.count(arg)&&!landing_options.count(arg)&&!v9_options.count(arg)&&!v8_options.count(arg)&&!recognized.count(arg)&&!recovery_options.count(arg)&&!v5_options.count(arg)&&!v7_options.count(arg)&&arg!="--score-profile") throw std::runtime_error("unknown option: "+arg);
             if(i+1>=argc) throw std::runtime_error("missing option value: "+arg);
             const std::string value=argv[++i];if(value.empty()||value[0]=='-') throw std::runtime_error("invalid option value: "+arg);
             if(arg=="--recovery-global-wirelength") {
@@ -179,6 +181,12 @@ int main(int argc,char** argv) {
             } else if(arg=="--wirelength-polish-rounds") {
                 const int v=integer(value);if(v<1||v>64) throw std::runtime_error("wirelength-polish-rounds must be 1..64");
                 options.wirelength_polish_rounds=v;
+            } else if(arg=="--wirelength-polish-blockers") {
+                const int v=integer(value);if(v>1) throw std::runtime_error("wirelength-polish-blockers must be 0 or 1");
+                options.wirelength_polish_blockers=v;
+            } else if(arg=="--wirelength-polish-group") {
+                const int v=integer(value);if(v<1||v>32) throw std::runtime_error("wirelength-polish-group must be 1..32");
+                options.wirelength_polish_group=size_t(v);
             } else if(arg=="--hotspot-cell-limit") {
                 const int count=integer(value);if(count>4096) throw std::runtime_error("hotspot cell limit out of range");
                 options.hotspot_cell_limit=size_t(count);

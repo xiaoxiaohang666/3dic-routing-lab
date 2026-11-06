@@ -2592,6 +2592,11 @@ bool NegotiatedRouter::export_stats(const std::string& path) const {
            <<",\"wirelength_polish_accepted\":"<<counters_.wirelength_polish_accepted
            <<",\"wirelength_polish_gain_dbu\":"<<counters_.wirelength_polish_gain_dbu
            <<",\"wirelength_polish_seconds\":"<<counters_.wirelength_polish_seconds
+           <<",\"wirelength_polish_free_searches\":"<<counters_.wirelength_polish_free_searches
+           <<",\"wirelength_polish_joint\":"<<counters_.wirelength_polish_joint
+           <<",\"wirelength_polish_joint_accepted\":"<<counters_.wirelength_polish_joint_accepted
+           <<",\"wirelength_polish_joint_nets\":"<<counters_.wirelength_polish_joint_nets
+           <<",\"wirelength_polish_joint_gain_dbu\":"<<counters_.wirelength_polish_joint_gain_dbu
            <<",\"v8_rrr_group_nets\":"<<counters_.v8_rrr_group_nets
            <<",\"v8_rrr_seconds\":"<<counters_.v8_rrr_seconds
            <<",\"hotspot_focus_builds\":"<<counters_.hotspot_focus_builds
@@ -2692,6 +2697,8 @@ bool NegotiatedRouter::export_stats(const std::string& path) const {
            <<",\"initial_maze_expansions\":"<<options_.initial_maze_expansions
            <<",\"initial_maze_seconds\":"<<options_.initial_maze_seconds
            <<",\"wirelength_polish_rounds\":"<<options_.wirelength_polish_rounds
+           <<",\"wirelength_polish_blockers\":"<<options_.wirelength_polish_blockers
+           <<",\"wirelength_polish_group\":"<<options_.wirelength_polish_group
            <<",\"via_stack_radius\":"<<options_.via_stack_radius
            <<",\"climb_escape_radius\":"<<options_.climb_escape_radius
            <<",\"v8_tsv_probe_candidates\":"<<options_.v8_tsv_probe_candidates

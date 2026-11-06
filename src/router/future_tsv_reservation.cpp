@@ -6,6 +6,7 @@
 
 namespace eda {
 int NegotiatedRouter::search_cell_demand(int node) const {
+    if(ignore_route_demand_) return 0;
     const auto found=future_tsv_demand_.find(node);
     const int64_t total=int64_t(demand_.at(size_t(node)))+
         (found==future_tsv_demand_.end()?0:found->second);
