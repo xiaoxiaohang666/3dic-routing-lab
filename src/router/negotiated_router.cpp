@@ -2174,6 +2174,7 @@ bool NegotiatedRouter::route_all() {
         future_tsv_squared_delta_=0;
         initial_build_=false;
         validate_complete();initial_metrics_=best_metrics_=measure();complete_=true;
+        save_safe_guides();
         std::cout<<"[INITIAL] nets="<<routes_.size()<<" slots="<<policy_.slots().size()<<" guide_overflow="<<best_metrics_.guide.overflow
                  <<" physical_overflow="<<best_metrics_.physical_overflow<<"\n";
         if(options_.low_layer_mask) run_low_layer_repair();
@@ -2229,6 +2230,11 @@ bool NegotiatedRouter::route_all() {
             pre_tsv_local_metrics_=best_metrics_=measure();
             if(!large_design()) recover_tsv_local();
         }
+        if(cleanup || polish) {
+            // Keep the schedule result as the fallback before the tail stages run.
+            try {validate_complete();save_safe_guides();}
+            catch(const std::exception& e) {std::cerr<<"[WARN] schedule result not saved as fallback: "<<e.what()<<"\n";}
+        }
         if(cleanup) {
             // The polish share stays reserved; whatever the cleanup leaves goes to the polish.
             deadline_=cleanup_deadline-polish_share;
@@ -2258,12 +2264,28 @@ bool NegotiatedRouter::route_all() {
         std::cout<<"[FINAL] guide_overflow="<<best_metrics_.guide.overflow<<" normalized="<<best_metrics_.guide.normalized
                  <<" TSV="<<best_metrics_.guide.tsv_count<<" expansions="<<counters_.expansions<<"\n";
         return true;
-    } catch(const std::exception& e) {std::cerr<<"[ERROR] "<<e.what()<<"\n";complete_=false;return false;}
+    } catch(const std::exception& e) {
+        std::cerr<<"[ERROR] "<<e.what()<<"\n";
+        if(!safe_available_) {complete_=false;return false;}
+        // A later stage failed after a complete solution had been validated:
+        // export that solution rather than nothing. The export still reads the
+        // written Guide back and runs the independent Guide checks.
+        guides_=safe_guides_;fallback_export_=true;complete_=true;
+        std::cerr<<"[WARN] exporting the last validated complete solution instead\n";
+        return true;
+    }
+}
+void NegotiatedRouter::save_safe_guides() {
+    safe_guides_.clear();
+    for(size_t i=0;i<routes_.size();++i) safe_guides_[def_.nets()[i].name]=routes_[i].guides;
+    safe_available_=true;
 }
 bool NegotiatedRouter::export_guide(const std::string& path) const {
     if(!complete_||guides_.empty()) return false;
     try {
-        validate_complete();const auto parent=std::filesystem::path(path).parent_path();
+        // In fallback mode routes_ may be mid-change; the written Guide is checked below.
+        if(!fallback_export_) validate_complete();
+        const auto parent=std::filesystem::path(path).parent_path();
         if(!parent.empty()) std::filesystem::create_directories(parent);
         std::ofstream out(path);if(!out) return false;
         for(const auto& [name,rects]:guides_) {
