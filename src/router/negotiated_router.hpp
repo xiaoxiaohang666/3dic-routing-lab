@@ -61,6 +61,18 @@ struct RouterOptions {
     // nets filling the full cells next to it and route the overflowing net first.
     bool overflow_cleanup_blockers{false};
     size_t overflow_cleanup_group{8};
+    // Final pass after the overflow cleanup: seconds reserved from the same
+    // deadline (zero turns it off). Every net is rerouted alone with the maze
+    // search, longest excess over its reference first, and kept only when the
+    // complete score improves. TSV cells never move.
+    double wirelength_polish_seconds{0};
+    int wirelength_polish_rounds{2};
+    // Initial routing of a large design normally keeps the L/Z template
+    // paths. With a nonzero budget every initial net also gets the bounded
+    // maze search (templates stay the incumbent; only a cheaper path under the
+    // same search costs replaces them). Budget is per net; zero turns it off.
+    size_t initial_maze_expansions{0};
+    double initial_maze_seconds{0};
     size_t v8_tsv_rematch_group_size{6}, v8_tsv_rematch_nets{256};
     double v8_tsv_rematch_seconds{30};
     // V9 mechanisms are independent for same-binary documented-rule ablations.
@@ -158,6 +170,10 @@ struct RouterCounters {
     size_t overflow_cleanup_rounds{}, overflow_cleanup_single{}, overflow_cleanup_single_accepted{},
            overflow_cleanup_joint{}, overflow_cleanup_joint_accepted{}, overflow_cleanup_joint_nets{};
     double overflow_cleanup_seconds{};
+    size_t wirelength_polish_rounds{}, wirelength_polish_attempted{}, wirelength_polish_accepted{};
+    double wirelength_polish_seconds{}, wirelength_polish_gain_dbu{};
+    size_t initial_maze_nets{};
+    double initial_maze_seconds{};
     size_t hotspot_focus_builds{}, hotspot_focus_cells{}, hotspot_focus_owner_nets{};
     double hotspot_focus_seconds{};
     size_t v8_rematch_groups{}, v8_rematch_candidates{}, v8_rematch_accepted{}, v8_rematch_rollbacks{}, v8_rematch_failures{};
@@ -359,6 +375,9 @@ private:
     bool v5_topology_trial_{false};
     bool recovery_cell_cost_{false};
     bool v7_refinement_active_{false};
+    // rrr_round normally gives the maze search only to nets in overflowing
+    // cells; the wirelength polish gives it to every net it reroutes.
+    bool force_rrr_maze_{false};
     size_t v7_refinement_expansion_start_{0};
     std::chrono::steady_clock::time_point v7_refinement_deadline_;
     size_t v7_scope_limit_{0};
@@ -445,6 +464,7 @@ private:
     void optimize_v7_tsv();
     void run_hotspot_rrr(int);
     void run_overflow_cleanup();
+    void run_wirelength_polish();
     std::vector<size_t> overflow_blockers(size_t) const;
     bool joint_rrr_round(const std::vector<size_t>&);
     std::vector<int> select_hotspot_cells(size_t);

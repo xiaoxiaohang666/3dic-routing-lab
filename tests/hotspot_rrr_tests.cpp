@@ -144,6 +144,45 @@ struct HotspotRrrTestAccess {
         require(!r.v9_rrr_checkpoint_active_ && !r.v7_refinement_active_,"cleanup with blockers ends cleanly");
         exact(r);
     }
+    static void polish(NegotiatedRouter& r) {
+        require(r.route_all(),"polish fixture initial route");
+        r.options_.local_repair=false;r.options_.pin_local=false;
+        r.options_.rrr_score_aware=true;r.options_.v7_rrr=true;
+        wasteful(r);
+        const auto before=r.best_metrics_;const auto deadline=r.deadline_;
+        const auto present=r.present_;const auto history=r.history_scale_;
+        const auto maze=r.options_.v7_rrr_astar_net_limit;const auto scope=r.v7_scope_limit_;
+        const auto period=r.options_.v9_checkpoint_seconds;const auto groups=r.options_.v9_checkpoint_groups;
+        const auto amortization=r.options_.checkpoint_amortization;
+        std::vector<std::vector<int>> tsv;for(const auto& route:r.routes_) tsv.push_back(route.measured.tsv_cells);
+        // Past the deadline the pass changes nothing.
+        const auto checkpoint=geometry(r.routes_);
+        r.deadline_=std::chrono::steady_clock::now()-std::chrono::seconds(1);
+        r.run_wirelength_polish();
+        require(geometry(r.routes_)==checkpoint && r.counters_.wirelength_polish_attempted==0,"polish past the deadline changes nothing");
+        r.deadline_=deadline;
+        r.options_.wirelength_polish_rounds=2;
+        r.run_wirelength_polish();
+        require(r.counters_.wirelength_polish_rounds>0 && r.counters_.wirelength_polish_attempted>0,"polish visits nets above their reference");
+        require(r.best_metrics_.guide.quality+1e-10>=before.guide.quality,"polish never lowers exact quality");
+        require(r.counters_.wirelength_polish_accepted>0 && r.best_metrics_.guide.wirelength<before.guide.wirelength,
+                "polish shortens the wasteful detours");
+        for(size_t i=0;i<r.routes_.size();++i) require(r.routes_[i].measured.tsv_cells==tsv[i],"polish keeps every TSV cell");
+        require(r.deadline_==deadline && r.present_==present && r.history_scale_==history &&
+                r.options_.v7_rrr_astar_net_limit==maze && r.v7_scope_limit_==scope && !r.v7_refinement_active_ &&
+                !r.force_rrr_maze_ && !r.v9_rrr_checkpoint_active_,"polish restores search settings and ends its checkpoint");
+        require(r.options_.v9_checkpoint_seconds==period && r.options_.v9_checkpoint_groups==groups &&
+                r.options_.checkpoint_amortization==amortization,"polish restores the shared audit schedule");
+        exact(r);
+    }
+    static void initial_maze(NegotiatedRouter& r) {
+        const auto expansions=r.options_.v7_rrr_astar_expansions;
+        require(r.route_all(),"initial maze route");
+        require(r.counters_.initial_maze_nets==r.routes_.size(),"every initial net gets the maze budget");
+        require(!r.v7_refinement_active_ && r.options_.v7_rrr_astar_expansions==expansions,
+                "initial maze puts the RRR budget back and disarms the search");
+        exact(r);
+    }
     static void fixed_work(NegotiatedRouter& full,NegotiatedRouter& incremental) {
         for(auto* r:{&full,&incremental}) {
             require(r->route_all(),"checkpoint comparison initial route");
@@ -452,6 +491,10 @@ int main(int argc,char** argv) {
             auto plain=options;plain.v9_incremental_rrr=false;
             NegotiatedRouter cleanup_plain(parsed,lef,thermal,plain);HotspotRrrTestAccess::cleanup(cleanup_plain);
             NegotiatedRouter cleanup_checkpointed(parsed,lef,thermal,options);HotspotRrrTestAccess::cleanup(cleanup_checkpointed);
+            NegotiatedRouter polish_plain(parsed,lef,thermal,plain);HotspotRrrTestAccess::polish(polish_plain);
+            NegotiatedRouter polish_checkpointed(parsed,lef,thermal,options);HotspotRrrTestAccess::polish(polish_checkpointed);
+            auto maze=options;maze.initial_maze_expansions=20000;maze.initial_maze_seconds=0.5;
+            NegotiatedRouter initial_maze(parsed,lef,thermal,maze);HotspotRrrTestAccess::initial_maze(initial_maze);
         }
         // The opt-in candidate is checked under the new scalar/via objective,
         // with and without deferred checkpoints. This is a synthetic contract

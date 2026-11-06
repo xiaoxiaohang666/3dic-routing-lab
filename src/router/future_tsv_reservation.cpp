@@ -71,13 +71,34 @@ void NegotiatedRouter::prepare_tsv_reservations(const std::vector<int>& assignme
 }
 void NegotiatedRouter::route_initial_net(size_t index,int slot) {
     update_tsv_reservation(index,-1);
+    // Optional maze search for every initial net, on the per-net budget of
+    // --initial-maze-expansions/--initial-maze-seconds. The RRR budget field
+    // is borrowed only while this net is built and is always put back.
+    const bool maze=options_.official_model && options_.initial_maze_expansions>0 && options_.initial_maze_seconds>0;
+    const size_t saved_expansions=options_.v7_rrr_astar_expansions;
+    const auto started=std::chrono::steady_clock::now();
+    bool armed=false;
+    const auto disarm=[&] {
+        if(!armed) return;
+        armed=false;v7_refinement_active_=false;options_.v7_rrr_astar_expansions=saved_expansions;
+        counters_.initial_maze_seconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
+    };
+    if(maze) {
+        options_.v7_rrr_astar_expansions=options_.initial_maze_expansions;
+        v7_refinement_active_=true;v7_refinement_expansion_start_=counters_.expansions;
+        v7_refinement_deadline_=std::min(deadline_,started+std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(options_.initial_maze_seconds)));
+        ++counters_.initial_maze_nets;armed=true;
+    }
     try {
         auto trial=build_route(index,slot);
+        disarm();
         account(index,trial,1);
         routes_[index]=std::move(trial);
     } catch(...) {
         // Promises do not enter real demand/owners. A failed search or rejected
         // account restores this net's promise before propagating the failure.
+        disarm();
         update_tsv_reservation(index,1);
         throw;
     }
