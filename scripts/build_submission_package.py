@@ -16,7 +16,7 @@ import subprocess
 import sys
 import zipfile
 
-ENTRY_SCRIPTS = ["run_package.sh", "run_a150_20261029.sh", "run_tsv_resource_v7.sh",
+ENTRY_SCRIPTS = ["run_package_guarded.sh", "run_package.sh", "run_a150_20261029.sh", "run_tsv_resource_v7.sh",
                  "run_tsv_resource_v6.sh", "run_tsv_resource.sh", "run_v9.sh"]
 THIRD_PARTY_PREFIXES = ("lib/", "runtime/official-flute/", "licenses/")
 RUN_SH = """#!/usr/bin/env bash
@@ -26,7 +26,7 @@ chmod u+x "$ROOT/router"
 export LD_LIBRARY_PATH="$ROOT/lib:$ROOT/runtime/official-flute${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export EDA_ROUTER_BINARY="$ROOT/router"
 export EDA_OFFICIAL_RUNTIME="$ROOT/runtime/official-flute"
-exec bash "$ROOT/scripts/run_package.sh" --time-limit __TIME_LIMIT__ "$@"
+exec bash "$ROOT/scripts/run_package_guarded.sh" --time-limit __TIME_LIMIT__ "$@"
 """
 
 
