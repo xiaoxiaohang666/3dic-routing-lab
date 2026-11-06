@@ -1,4 +1,5 @@
 #include "objectives/official_metrics.hpp"
+#include "official_gain_table.hpp"
 #include "scoring/compat_resources.hpp"
 #include "scoring/compat_validation.hpp"
 

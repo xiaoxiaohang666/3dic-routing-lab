@@ -1,4 +1,5 @@
 #include "router/negotiated_router.hpp"
+#include "../scripts/official_gain_table.hpp"
 #include "objectives/net_cell_contribution.hpp"
 #include <filesystem>
 #include <fstream>
