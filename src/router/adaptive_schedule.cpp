@@ -6,15 +6,23 @@ void NegotiatedRouter::run_v9_schedule() {
     const auto outer_deadline=deadline_;
     const auto original=options_;
     struct Restore {std::function<void()> f;~Restore(){f();}} restore{[&]{deadline_=outer_deadline;options_=original;}};
+    // Late RRR keeps its seconds out of every earlier phase. At most half of
+    // what remains is held back, so a short run still gets its usual phases.
+    auto schedule_deadline=outer_deadline;
+    if(options_.late_rrr_seconds>0) {
+        const double remaining=std::max(0.0,std::chrono::duration<double>(outer_deadline-Clock::now()).count());
+        const double held=std::min(options_.late_rrr_seconds,0.5*remaining);
+        schedule_deadline=outer_deadline-std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(held));
+    }
     // One continuous phase amortizes queue construction and required full
     // checks. Its time comes from the same process deadline, never an extension.
     // This independent ablation leaves the existing schedule unchanged at 0.
     if(options_.rrr_reserved_seconds>0 && options_.rrr_rounds>0 && !timed_out()) {
         const auto phase_started=Clock::now();
-        const double remaining=std::max(0.0,std::chrono::duration<double>(outer_deadline-phase_started).count());
+        const double remaining=std::max(0.0,std::chrono::duration<double>(schedule_deadline-phase_started).count());
         const double slice=std::min(remaining,options_.rrr_reserved_seconds);
         const double before=best_metrics_.guide.quality;
-        deadline_=std::min(outer_deadline,phase_started+std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(slice)));
+        deadline_=std::min(schedule_deadline,phase_started+std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(slice)));
         counters_.v9_rrr_budget+=slice;
         try {run_hotspot_rrr(options_.rrr_rounds);}
         catch(const std::exception& e) {
@@ -44,7 +52,7 @@ void NegotiatedRouter::run_v9_schedule() {
     pre_recovery_metrics_=best_metrics_;
     // Bounded batches prevent indefinitely revisiting an exhausted candidate
     // family. Every enabled family receives a sample before gain/time selection.
-    for(size_t dispatch=0;dispatch<64 && Clock::now()<outer_deadline;++dispatch) {
+    for(size_t dispatch=0;dispatch<64 && Clock::now()<schedule_deadline;++dispatch) {
         size_t chosen=4;double best=-1;
         for(size_t k=0;k<4;++k) {
             if(!enabled[k]||stale[k]>=2||(k==0&&rrr_remaining<=0)) continue;
@@ -53,10 +61,10 @@ void NegotiatedRouter::run_v9_schedule() {
             if(score>best) {best=score;chosen=k;}
         }
         if(chosen==4) break;
-        const double remaining=std::max(0.0,std::chrono::duration<double>(outer_deadline-Clock::now()).count());
+        const double remaining=std::max(0.0,std::chrono::duration<double>(schedule_deadline-Clock::now()).count());
         size_t unseen=0;for(size_t k=0;k<4;++k) unseen+=enabled[k]&&!visits[k];
         const double slice=std::min(remaining,std::max(.02,std::min(60.0,remaining/double(std::max(size_t(2),unseen+1)))));
-        deadline_=std::min(outer_deadline,Clock::now()+std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(slice)));
+        deadline_=std::min(schedule_deadline,Clock::now()+std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(slice)));
         const auto start=Clock::now();const double before=best_metrics_.guide.quality;
         const auto tsv_sweeps_before=counters_.v9_tsv_sweeps;
         try {
@@ -116,6 +124,35 @@ void NegotiatedRouter::run_v9_schedule() {
         std::cout<<"[V9 budget] stage="<<chosen<<" allocated="<<slice<<" used="<<elapsed<<" gain="<<delta<<'\n';
     }
     if(recovery_seen)recovery_stats_=recovery_total;
+    // TSV moves and recovery change the demand around nets the first RRR
+    // could not move. Revisit the remaining overflow owners once more, with
+    // the same exact complete-score acceptance. No overflow means no owners.
+    if(options_.late_rrr_seconds>0 && original.v8_rrr && original.rrr_rounds>0 && Clock::now()<outer_deadline) {
+        const auto phase_started=Clock::now();
+        const double before=best_metrics_.guide.quality;
+        const size_t groups=counters_.v8_rrr_groups,accepted=counters_.v8_rrr_groups_accepted;
+        counters_.late_rrr_overflow_before=size_t(best_metrics_.guide.overflow);
+        counters_.late_rrr_budget=std::chrono::duration<double>(outer_deadline-phase_started).count();
+        deadline_=outer_deadline;
+        options_.v8_rrr_group_size=options_.late_rrr_group_size;
+        try {run_hotspot_rrr(original.rrr_rounds);}
+        catch(const std::exception& e) {
+            ++rejection_reasons_[std::string("Late RRR stopped: ")+e.what()];
+            complete_validation_cached_=false;validate_complete();best_metrics_=measure();verify_official_ledger(best_metrics_);
+            if(best_metrics_.guide.quality+1e-10<before)
+                throw std::logic_error("Late RRR failed to restore accepted solution");
+        }
+        deadline_=outer_deadline;
+        counters_.late_rrr_seconds=std::chrono::duration<double>(Clock::now()-phase_started).count();
+        counters_.late_rrr_gain=100*(best_metrics_.guide.quality-before);
+        counters_.late_rrr_groups=counters_.v8_rrr_groups-groups;
+        counters_.late_rrr_accepted=counters_.v8_rrr_groups_accepted-accepted;
+        counters_.late_rrr_overflow_after=size_t(best_metrics_.guide.overflow);
+        std::cout<<"[Late RRR] allocated="<<counters_.late_rrr_budget<<" used="<<counters_.late_rrr_seconds
+                 <<" groups="<<counters_.late_rrr_groups<<" accepted="<<counters_.late_rrr_accepted
+                 <<" overflow="<<counters_.late_rrr_overflow_before<<"->"<<counters_.late_rrr_overflow_after
+                 <<" gain="<<counters_.late_rrr_gain<<'\n';
+    }
     complete_validation_cached_=false;validate_complete();best_metrics_=measure();verify_official_ledger(best_metrics_);
     pre_tsv_local_metrics_=best_metrics_;
 }

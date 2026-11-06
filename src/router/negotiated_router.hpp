@@ -75,6 +75,11 @@ struct RouterOptions {
     size_t tsv_tree_move_expansions{4096};
     int low_layer_mask{0}; // bit 0 lower die, bit 1 upper die
     double low_layer_seconds{120}, rrr_reserved_seconds{0};
+    // Late RRR: seconds kept back from the adaptive schedule for one more
+    // hotspot RRR after TSV moves and recovery. Off at 0. Group size 1 accepts
+    // each net on its own complete score instead of a whole 48-net group.
+    double late_rrr_seconds{0};
+    size_t late_rrr_group_size{1};
     size_t low_layer_max_attempts{2000};
     size_t v9_checkpoint_groups{32};
     double v9_checkpoint_seconds{5.0};
@@ -174,6 +179,8 @@ struct RouterCounters {
     size_t v9_region_candidates{}, v9_region_accepted{};
     double v9_tsv_explore_gain{}, v9_tsv_explore_seconds{}, v9_tsv_refresh_seconds{};
     double v9_rrr_budget{}, v9_recovery_budget{}, v9_rematch_budget{}, v9_tsv_budget{};
+    double late_rrr_budget{}, late_rrr_seconds{}, late_rrr_gain{};
+    size_t late_rrr_overflow_before{}, late_rrr_overflow_after{}, late_rrr_groups{}, late_rrr_accepted{};
 
 };
 // One undirected resource key; a Net consumes each resource only once.

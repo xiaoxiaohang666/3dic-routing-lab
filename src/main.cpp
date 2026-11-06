@@ -57,6 +57,8 @@ void usage(const char* p) {
         <<"--low-layer-mask 0|1|2|3 (opt-in bottom/top-die low-layer chain lifting)\n"
         <<"--low-layer-seconds S (>0..3600) --low-layer-max-attempts N (1..1000000)\n"
         <<"--rrr-reserved-seconds S (0..3600; one RRR phase inside the total budget)\n"
+        <<"--late-rrr-seconds S (0..3600; default 0 off; hotspot RRR again after TSV moves and recovery, inside the total budget)\n"
+        <<"--late-rrr-group-size N (1..256, default 1; nets per accepted late RRR transaction)\n"
         <<"--resource-candidate-pool 0|1 (resource-aware TSV retrieval before truncation)\n"
         <<"--thermal-coverage 0|1 (independent thermal exploration coverage)\n"
         <<"--tsv-track-demand 0|1 (5um landing-cell track union; default 0)\n"
@@ -131,7 +133,7 @@ int main(int argc,char** argv) {
             const std::set<std::string> v9_options={"--v9-incremental-rrr","--v9-checkpoint-groups","--v9-checkpoint-seconds","--v9-subtree-recovery","--v9-subtree-branches","--v9-subtree-boundary","--v9-access-rematch","--v9-rematch-edges","--v9-rematch-access-seconds","--v9-tsv-coverage","--v9-tsv-stale-sweeps","--v9-thermal-regions","--v9-adaptive-budget"};
             const std::set<std::string> landing_options={"--tsv-track-demand","--tsv-landing-pricing","--tsv-finite-quote","--tsv-landing-rrr",
                 "--future-tsv-reservation","--resource-local-rrr","--joint-layer-recovery","--resource-candidate-pool","--thermal-coverage","--tsv-index-reuse","--checkpoint-reuse","--checkpoint-amortization"};
-            const std::set<std::string> low_layer_options={"--low-layer-mask","--low-layer-seconds","--low-layer-max-attempts","--rrr-reserved-seconds"};
+            const std::set<std::string> low_layer_options={"--low-layer-mask","--low-layer-seconds","--low-layer-max-attempts","--rrr-reserved-seconds","--late-rrr-seconds","--late-rrr-group-size"};
             const std::set<std::string> tree_move_options={"--tsv-tree-move","--tsv-tree-move-seconds","--tsv-tree-move-expansions"};
             if(arg!="--recovery-global-wirelength"&&arg!="--via-stack-radius"&&arg!="--climb-escape-radius"&&arg!="--hotspot-cell-limit"&&arg!="--objective-profile"&&!tree_move_options.count(arg)&&!low_layer_options.count(arg)&&!landing_options.count(arg)&&!v9_options.count(arg)&&!v8_options.count(arg)&&!recognized.count(arg)&&!recovery_options.count(arg)&&!v5_options.count(arg)&&!v7_options.count(arg)&&arg!="--score-profile") throw std::runtime_error("unknown option: "+arg);
             if(i+1>=argc) throw std::runtime_error("missing option value: "+arg);
@@ -191,6 +193,9 @@ int main(int argc,char** argv) {
                 if(arg=="--low-layer-mask") {
                     const int v=integer(value);if(v>3) throw std::runtime_error("low-layer mask must be 0..3");
                     options.low_layer_mask=v;
+                } else if(arg=="--late-rrr-group-size") {
+                    const int v=integer(value);if(v<1||v>256) throw std::runtime_error("late RRR group size must be 1..256");
+                    options.late_rrr_group_size=size_t(v);
                 } else if(arg=="--low-layer-max-attempts") {
                     const int v=integer(value,true);if(v>1000000) throw std::runtime_error("low-layer attempt budget out of range");
                     options.low_layer_max_attempts=size_t(v);
@@ -199,6 +204,7 @@ int main(int argc,char** argv) {
                     if(end!=value.size()||!std::isfinite(v)||v<0||v>3600||(arg=="--low-layer-seconds"&&v==0))
                         throw std::runtime_error("low-layer/RRR seconds out of range");
                     if(arg=="--low-layer-seconds") options.low_layer_seconds=v;
+                    else if(arg=="--late-rrr-seconds") options.late_rrr_seconds=v;
                     else options.rrr_reserved_seconds=v;
                 }
             }
@@ -535,6 +541,8 @@ int main(int argc,char** argv) {
             throw std::runtime_error("low-layer experiments require official documented resources and unified budget");
         if(options.rrr_reserved_seconds>0&&(!options.v9_adaptive_budget||!options.v8_rrr||options.rrr_rounds<=0))
             throw std::runtime_error("reserved RRR requires adaptive budget, hotspot RRR and positive rounds");
+        if(options.late_rrr_seconds>0&&(!options.official_model||!options.unified_budget||!options.v9_adaptive_budget||!options.v8_rrr||options.rrr_rounds<=0))
+            throw std::runtime_error("late RRR requires official model, unified and adaptive budget, hotspot RRR and positive rounds");
         if(any_v9&&(!options.official_model||!options.unified_budget)) throw std::runtime_error("v9 requires --model official and --unified-budget 1");
         if(options.v9_incremental_rrr&&!options.v8_rrr) throw std::runtime_error("v9 incremental RRR requires --v8-rrr 1");
         if(options.v9_subtree_recovery&&!options.large_recovery) throw std::runtime_error("v9 subtree recovery requires --large-recovery 1");

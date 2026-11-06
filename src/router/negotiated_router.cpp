@@ -2342,6 +2342,7 @@ bool NegotiatedRouter::export_stats(const std::string& path) const {
            <<",\"seconds_limit\":"<<options_.low_layer_seconds
            <<",\"max_attempts\":"<<options_.low_layer_max_attempts
            <<",\"rrr_reserved_seconds\":"<<options_.rrr_reserved_seconds
+           <<",\"late_rrr_seconds\":"<<options_.late_rrr_seconds<<",\"late_rrr_group_size\":"<<options_.late_rrr_group_size
            <<",\"queued\":"<<counters_.low_layer_queued
            <<",\"attempted\":"<<counters_.low_layer_attempted
            <<",\"chains\":"<<counters_.low_layer_chains
@@ -2537,6 +2538,11 @@ bool NegotiatedRouter::export_stats(const std::string& path) const {
            <<",\"v9_recovery_budget\":"<<counters_.v9_recovery_budget
            <<",\"v9_rematch_budget\":"<<counters_.v9_rematch_budget
            <<",\"v9_tsv_budget\":"<<counters_.v9_tsv_budget
+           <<",\"late_rrr_budget\":"<<counters_.late_rrr_budget<<",\"late_rrr_seconds\":"<<counters_.late_rrr_seconds
+           <<",\"late_rrr_gain\":"<<counters_.late_rrr_gain<<",\"late_rrr_groups\":"<<counters_.late_rrr_groups
+           <<",\"late_rrr_accepted\":"<<counters_.late_rrr_accepted
+           <<",\"late_rrr_overflow_before\":"<<counters_.late_rrr_overflow_before
+           <<",\"late_rrr_overflow_after\":"<<counters_.late_rrr_overflow_after
            <<",\"v8_rrr_groups\":"<<counters_.v8_rrr_groups
            <<",\"v8_rrr_groups_accepted\":"<<counters_.v8_rrr_groups_accepted
            <<",\"v8_rrr_groups_rejected\":"<<counters_.v8_rrr_groups_rejected

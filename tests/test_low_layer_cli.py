@@ -13,6 +13,8 @@ class LowLayerCliTests(unittest.TestCase):
             '--low-layer-seconds': ('0', 'nan', '3601'),
             '--low-layer-max-attempts': ('0', '1000001'),
             '--rrr-reserved-seconds': ('nan', '3601'),
+            '--late-rrr-seconds': ('nan', '3601', '-1'),
+            '--late-rrr-group-size': ('0', '257'),
         }.items():
             for value in values:
                 result = subprocess.run([str(ROUTER), flag, value], capture_output=True, text=True)
@@ -22,6 +24,19 @@ class LowLayerCliTests(unittest.TestCase):
         self.assertIn('require official documented', result.stderr)
 
     def test_combined_phases_preserve_serialized_ledger(self):
+        self.run_phases(['--low-layer-mask', '3', '--low-layer-seconds', '1',
+                         '--low-layer-max-attempts', '20', '--rrr-reserved-seconds', '1'], late=False)
+
+    def test_late_rrr_preserves_serialized_ledger(self):
+        # Late RRR runs after TSV moves and recovery inside the same deadline.
+        self.run_phases(['--rrr-reserved-seconds', '1', '--late-rrr-seconds', '2', '--late-rrr-group-size', '1'], late=True)
+
+    def test_late_rrr_requires_adaptive_hotspot_rrr(self):
+        result = subprocess.run([str(ROUTER), '--late-rrr-seconds', '5'], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('late RRR requires', result.stderr)
+
+    def run_phases(self, extra, late):
         with tempfile.TemporaryDirectory(prefix='low-layer-cli-') as tmp:
             root = Path(tmp)
             lef, df, heat = root/'in.lef', root/'in.def', root/'heat.json'
@@ -33,13 +48,22 @@ class LowLayerCliTests(unittest.TestCase):
             command = ['bash', str(ROOT/'scripts/run_tsv_resource_v7.sh'),
                 '--def', str(df), '--lef', str(lef), '--thermal-report', str(heat),
                 '--output', str(root/'result.guide'), '--stats', str(root/'stats.json'),
-                '--time-limit', '10', '--low-layer-mask', '3', '--low-layer-seconds', '1',
-                '--low-layer-max-attempts', '20', '--rrr-reserved-seconds', '1']
+                '--time-limit', '10', *extra]
             result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
             saved = json.loads((root/'stats.json').read_text())
-            self.assertEqual(saved['low_layer']['mask'], 3)
+            self.assertEqual(saved['low_layer']['mask'], 0 if late else 3)
             self.assertEqual(saved['low_layer']['rrr_reserved_seconds'], 1)
+            self.assertEqual(saved['low_layer']['late_rrr_seconds'], 2 if late else 0)
+            counters = saved['counters']
+            if late:
+                self.assertIn('[Late RRR]', result.stdout)
+                self.assertGreater(counters['late_rrr_budget'], 0)
+                self.assertLessEqual(counters['late_rrr_overflow_after'], counters['late_rrr_overflow_before'])
+                self.assertGreaterEqual(counters['late_rrr_gain'], 0)
+            else:
+                self.assertNotIn('[Late RRR]', result.stdout)
+                self.assertEqual(counters['late_rrr_budget'], 0)
             self.assertFalse(saved['official_scorer_run'])
             result = subprocess.run([str(MEASURER), "--rules-profile", "historical", '--def', str(df), '--lef', str(lef),
                 '--thermal', str(heat), '--guide', str(root/'result.guide'), '--runtime', str(RUNTIME),
