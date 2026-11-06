@@ -96,6 +96,13 @@ published rule), with these points:
 - each TSV landing keeps one net;
 - a via climb that would pass through full cells may first step sideways on the pin layer, up to 3
   cells (`--climb-escape-radius 3`); the candidate is taken only when its total cost is lower.
+- every initial net also gets a bounded maze search (20000 expansions, 0.03 s);
+- at the end, nets still on overflowing cells are rerouted (800 s), then every net with excess length
+  is rerouted alone by the maze search (1200 s), and if overflow is left the cleanup runs once more
+  (300 s); every change is kept only when the complete score improves;
+- `run.sh` goes through `scripts/run_package_guarded.sh`: if a run fails (non-zero exit, no Guide, or
+  far past its own time limit) it is rerun with fewer optional stages (3600 s, then 3000 s); if no
+  attempt passes, the first Guide written is kept and the script exits 0.
 
 Source commit {a.source_commit}. Offline readback scores are model estimates, not official results.
 """
