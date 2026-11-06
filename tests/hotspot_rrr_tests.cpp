@@ -152,6 +152,8 @@ struct HotspotRrrTestAccess {
         const auto before=r.best_metrics_;const auto deadline=r.deadline_;
         const auto present=r.present_;const auto history=r.history_scale_;
         const auto maze=r.options_.v7_rrr_astar_net_limit;const auto scope=r.v7_scope_limit_;
+        const auto period=r.options_.v9_checkpoint_seconds;const auto groups=r.options_.v9_checkpoint_groups;
+        const auto amortization=r.options_.checkpoint_amortization;
         std::vector<std::vector<int>> tsv;for(const auto& route:r.routes_) tsv.push_back(route.measured.tsv_cells);
         // Past the deadline the pass changes nothing.
         const auto checkpoint=geometry(r.routes_);
@@ -169,6 +171,8 @@ struct HotspotRrrTestAccess {
         require(r.deadline_==deadline && r.present_==present && r.history_scale_==history &&
                 r.options_.v7_rrr_astar_net_limit==maze && r.v7_scope_limit_==scope && !r.v7_refinement_active_ &&
                 !r.force_rrr_maze_ && !r.v9_rrr_checkpoint_active_,"polish restores search settings and ends its checkpoint");
+        require(r.options_.v9_checkpoint_seconds==period && r.options_.v9_checkpoint_groups==groups &&
+                r.options_.checkpoint_amortization==amortization,"polish restores the shared audit schedule");
         exact(r);
     }
     static void initial_maze(NegotiatedRouter& r) {
