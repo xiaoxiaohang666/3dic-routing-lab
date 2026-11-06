@@ -43,6 +43,7 @@ def main() -> int:
     p.add_argument("--label", required=True)
     p.add_argument("--source-commit", required=True)
     p.add_argument("--time-limit", type=int, default=3600)
+    p.add_argument("--report", type=pathlib.Path, help="technical report placed at the ZIP root as 技术报告.md")
     a = p.parse_args()
     if a.output.exists():
         p.error("output must be new: " + str(a.output))
@@ -67,6 +68,8 @@ def main() -> int:
     files["router"] = (router, 0o755)
     files["run.sh"] = (RUN_SH.replace("__TIME_LIMIT__", str(a.time_limit)).encode(), 0o755)
     files["build.sh"] = ((a.root / "submission/build.sh").read_bytes(), 0o755)
+    if a.report is not None:
+        files["技术报告.md"] = (a.report.read_bytes(), 0o644)
     for script in ENTRY_SCRIPTS:
         files["scripts/" + script] = ((a.root / "scripts" / script).read_bytes(), 0o755)
     for path in sorted((a.root / "src").rglob("*")):
@@ -74,7 +77,8 @@ def main() -> int:
             files[str(path.relative_to(a.root))] = (path.read_bytes(), 0o644)
     help_text = subprocess.run([str(a.router), "--help"], capture_output=True, text=True).stdout
     for flag in ("--thermal-gain-estimate", "--objective-profile", "--climb-escape-radius", "--fixed-resource-model",
-                 "--congestion-target-q", "--rrr-reserved-seconds"):
+                 "--congestion-target-q", "--rrr-reserved-seconds", "--overflow-cleanup-seconds",
+                 "--initial-maze-expansions", "--initial-maze-seconds", "--wirelength-polish-seconds"):
         if flag not in help_text:
             raise SystemExit("router binary does not support " + flag)
     readme = f"""# 3D IC global router package {a.label}

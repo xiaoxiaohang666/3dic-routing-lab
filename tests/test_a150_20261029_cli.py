@@ -86,5 +86,9 @@ class A150Cli(unittest.TestCase):
    self.assertEqual(packaged['options']['rrr_net_limit'],8192)
    self.assertEqual(packaged['options']['v7_rrr_net_limit'],32768)
    self.assertTrue(packaged['resource_v6']['future_tsv_reservation'])
+   # Settings of the d04 three-case run: initial maze search and end wirelength polish on.
+   self.assertEqual(packaged['options']['initial_maze_expansions'],20000)
+   self.assertAlmostEqual(packaged['options']['initial_maze_seconds'],0.03)
+   self.assertEqual(packaged['options']['wirelength_polish_seconds'],1200)
    for path,sha in inputs.items():self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),sha)
 if __name__=='__main__':unittest.main()

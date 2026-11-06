@@ -10,8 +10,11 @@ if [[ "${1:-}" == --help ]]; then
 Usage: bash scripts/run_package.sh --def FILE --lef FILE --thermal-report FILE --output NEW.guide [router options]
 Settings of run_fixed_resource_candidate.sh with --thermal-gain-estimate hottest-k
 instead of a per-case G. Later options override these values, for example an explicit
---thermal-gain G or --climb-escape-radius 0. Pass --time-limit; the package uses 3600, of which the
-overflow cleanup takes the last 800 s (--overflow-cleanup-seconds 0 turns it off).
+--thermal-gain G or --climb-escape-radius 0. Pass --time-limit; the package uses 6300. The overflow
+cleanup (800 s) and the end wirelength polish (1200 s) share the tail of the budget
+(--overflow-cleanup-seconds 0 / --wirelength-polish-seconds 0 turn them off). Every initial net also gets
+the bounded maze search (20000 expansions, 0.03 s; --initial-maze-expansions 0 turns it off).
+These are the settings of the 2026-11-06 d04 three-case run (job e584a705), except G.
 HELP
     exit 0
 fi
@@ -21,7 +24,8 @@ exec bash "$ROOT/scripts/run_a150_20261029.sh" \
     --rrr-reserved-seconds 2000 --rrr-rounds 64 \
     --v7-rrr-net-limit 32768 --rrr-net-limit 8192 \
     --congestion-target-q 30 --future-tsv-reservation 1 --climb-escape-radius 3 \
-    --overflow-cleanup-seconds 800 --overflow-cleanup-blockers 1 "$@" \
+    --overflow-cleanup-seconds 800 --overflow-cleanup-blockers 1 \
+    --initial-maze-expansions 20000 --initial-maze-seconds 0.03 --wirelength-polish-seconds 1200 "$@" \
     --model official --score-profile 20261020 \
     --resource-profile documented --rules-profile a150-20261029 \
     --objective-profile site-20261029 --tsv-obstacle-scope interface \
