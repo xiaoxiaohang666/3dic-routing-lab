@@ -97,6 +97,8 @@ published rule), with these points:
 - a via climb that would pass through full cells may first step sideways on the pin layer, up to 3
   cells (`--climb-escape-radius 3`); the candidate is taken only when its total cost is lower.
 - every initial net also gets a bounded maze search (20000 expansions, 0.03 s);
+- TSV moves also try up to 16 extra free landings within 16 cells of the pins, ranked by heat value
+  minus the distance to each die's pin tree (`--tsv-move-steiner 16 --tsv-move-steiner-margin 16`);
 - at the end, nets still on overflowing cells are rerouted (800 s), then every net with excess length
   is rerouted alone by the maze search (1200 s), and if overflow is left the cleanup runs once more
   (300 s); every change is kept only when the complete score improves;
