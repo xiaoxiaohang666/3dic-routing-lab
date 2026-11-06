@@ -35,6 +35,7 @@ std::vector<size_t> NegotiatedRouter::overflow_blockers(size_t index) const {
     std::map<size_t,size_t> owners;
     for(int cell:around) for(int owner:cell_owners(cell)) {
         if(size_t(owner)==index) continue;
+        if(options_.overflow_cleanup_same_die_blockers && def_.nets()[size_t(owner)].is_cross_die) continue;
         owners.emplace(size_t(owner),routes_.at(size_t(owner)).measured.demand.size());
     }
     std::vector<std::pair<size_t,size_t>> ranked;for(auto [net,size]:owners) ranked.push_back({size,net});

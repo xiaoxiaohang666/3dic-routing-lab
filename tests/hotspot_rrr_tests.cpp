@@ -122,6 +122,15 @@ struct HotspotRrrTestAccess {
             require(b.size()<=1 && std::find(b.begin(),b.end(),i)==b.end(),"blockers exclude the net and respect the cap");
         }
         r.options_.overflow_cleanup_group=8;
+        // With same-die blockers the group is the old one minus the cross-die nets.
+        for(size_t i:{3U,4U}) {
+            const auto all=r.overflow_blockers(i);
+            r.options_.overflow_cleanup_same_die_blockers=true;
+            const auto same=r.overflow_blockers(i);
+            r.options_.overflow_cleanup_same_die_blockers=false;
+            std::vector<size_t> expected;for(size_t b:all) if(!r.def_.nets()[b].is_cross_die) expected.push_back(b);
+            require(same==expected,"same-die blockers drop exactly the cross-die nets");
+        }
         // A joint transaction that cannot route restores every route and ledger.
         const auto checkpoint=geometry(r.routes_);const auto demand=r.demand_;
         const auto cells=r.cell_nets_;const auto edges=r.edge_nets_;const auto stable=r.best_metrics_;
@@ -173,6 +182,24 @@ struct HotspotRrrTestAccess {
                 !r.force_rrr_maze_ && !r.v9_rrr_checkpoint_active_,"polish restores search settings and ends its checkpoint");
         require(r.options_.v9_checkpoint_seconds==period && r.options_.v9_checkpoint_groups==groups &&
                 r.options_.checkpoint_amortization==amortization,"polish restores the shared audit schedule");
+        exact(r);
+        // The cleanup can run a second time after the polish with the same guarantees.
+        wasteful(r);const auto again=r.best_metrics_;
+        r.options_.overflow_cleanup_blockers=true;r.options_.overflow_cleanup_same_die_blockers=true;
+        r.run_overflow_cleanup();
+        require(r.best_metrics_.guide.quality+1e-10>=again.guide.quality,"cleanup after the polish never lowers exact quality");
+        require(r.deadline_==deadline && !r.v9_rrr_checkpoint_active_ && !r.v7_refinement_active_,"cleanup after the polish ends cleanly");
+        r.options_.overflow_cleanup_blockers=false;r.options_.overflow_cleanup_same_die_blockers=false;
+        exact(r);
+    }
+    // Full schedule with cleanup, polish and the final cleanup: routing succeeds,
+    // the final pass never adds overflow and the solution stays exact.
+    static void tail(NegotiatedRouter& r,bool final_on) {
+        require(r.route_all(),"tail schedule routes completely");
+        if(!final_on) require(r.counters_.overflow_cleanup_final_runs==0,"final cleanup stays off at zero seconds");
+        if(r.counters_.overflow_cleanup_final_runs) require(r.counters_.overflow_cleanup_final_overflow_after<=
+            r.counters_.overflow_cleanup_final_overflow_before,"final cleanup never adds overflow");
+        require(!r.v9_rrr_checkpoint_active_ && !r.v7_refinement_active_ && !r.force_rrr_maze_,"tail schedule ends cleanly");
         exact(r);
     }
     static void initial_maze(NegotiatedRouter& r) {
@@ -493,6 +520,12 @@ int main(int argc,char** argv) {
             NegotiatedRouter cleanup_checkpointed(parsed,lef,thermal,options);HotspotRrrTestAccess::cleanup(cleanup_checkpointed);
             NegotiatedRouter polish_plain(parsed,lef,thermal,plain);HotspotRrrTestAccess::polish(polish_plain);
             NegotiatedRouter polish_checkpointed(parsed,lef,thermal,options);HotspotRrrTestAccess::polish(polish_checkpointed);
+            for(bool final_on:{false,true}) for(bool checkpointed:{false,true}) {
+                auto tail=options;tail.v9_incremental_rrr=checkpointed;
+                tail.overflow_cleanup_seconds=5;tail.overflow_cleanup_blockers=true;tail.wirelength_polish_seconds=5;
+                tail.overflow_cleanup_same_die_blockers=final_on;tail.overflow_cleanup_final_seconds=final_on?5:0;
+                NegotiatedRouter tail_router(parsed,lef,thermal,tail);HotspotRrrTestAccess::tail(tail_router,final_on);
+            }
             auto maze=options;maze.initial_maze_expansions=20000;maze.initial_maze_seconds=0.5;
             NegotiatedRouter initial_maze(parsed,lef,thermal,maze);HotspotRrrTestAccess::initial_maze(initial_maze);
         }

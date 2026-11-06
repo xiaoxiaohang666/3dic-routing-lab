@@ -25,6 +25,8 @@ void usage(const char* p) {
         <<"--overflow-cleanup-seconds S (0..7200; default 800 under --model official with the a150-20261029 rules and fast quality, otherwise 0=off; final pass rerouting each overflowing net, time taken from the same deadline)\n"
         <<"--overflow-cleanup-rounds N (1..64, default 4) --overflow-cleanup-blockers 0|1 (default 1 where the cleanup defaults on, otherwise 0; also lift nets filling full cells next to it)\n"
         <<"--overflow-cleanup-group N (1..32, default 8; most extra nets lifted with one overflowing net)\n"
+        <<"--overflow-cleanup-same-die-blockers 0|1 (default 0; leave cross-die nets out of the lifted blocker group)\n"
+        <<"--overflow-cleanup-final-seconds S (0..7200, default 0=off; one more overflow cleanup after the wirelength polish, time from the same tail)\n"
         <<"--wirelength-polish-seconds S (0..36000; default 0=off; after the overflow cleanup, reroute every net alone with the maze search, longest excess first, keep only complete-score gains)\n"
         <<"--wirelength-polish-rounds N (1..64, default 2)\n"
         <<"--initial-maze-expansions N (0..10000000; default 0=off) --initial-maze-seconds S (0..60, per net; both nonzero turn it on: every initial net also gets the bounded maze search, templates stay the incumbent)\n"
@@ -152,7 +154,7 @@ int main(int argc,char** argv) {
                 "--future-tsv-reservation","--resource-local-rrr","--joint-layer-recovery","--resource-candidate-pool","--thermal-coverage","--tsv-index-reuse","--checkpoint-reuse","--checkpoint-amortization"};
             const std::set<std::string> low_layer_options={"--low-layer-mask","--low-layer-seconds","--low-layer-max-attempts","--rrr-reserved-seconds"};
             const std::set<std::string> tree_move_options={"--tsv-tree-move","--tsv-tree-move-seconds","--tsv-tree-move-expansions"};
-            if(arg!="--recovery-global-wirelength"&&arg!="--initial-short-first"&&arg!="--tsv-move-steiner"&&arg!="--tsv-move-steiner-margin"&&arg!="--layer-swap"&&arg!="--layer-swap-blockers"&&arg!="--via-stack-radius"&&arg!="--climb-escape-radius"&&arg!="--hotspot-cell-limit"&&arg!="--overflow-cleanup-seconds"&&arg!="--overflow-cleanup-rounds"&&arg!="--overflow-cleanup-blockers"&&arg!="--overflow-cleanup-group"&&arg!="--wirelength-polish-seconds"&&arg!="--wirelength-polish-rounds"&&arg!="--initial-maze-expansions"&&arg!="--initial-maze-seconds"&&arg!="--objective-profile"&&!tree_move_options.count(arg)&&!low_layer_options.count(arg)&&!landing_options.count(arg)&&!v9_options.count(arg)&&!v8_options.count(arg)&&!recognized.count(arg)&&!recovery_options.count(arg)&&!v5_options.count(arg)&&!v7_options.count(arg)&&arg!="--score-profile") throw std::runtime_error("unknown option: "+arg);
+            if(arg!="--recovery-global-wirelength"&&arg!="--initial-short-first"&&arg!="--tsv-move-steiner"&&arg!="--tsv-move-steiner-margin"&&arg!="--layer-swap"&&arg!="--layer-swap-blockers"&&arg!="--via-stack-radius"&&arg!="--climb-escape-radius"&&arg!="--hotspot-cell-limit"&&arg!="--overflow-cleanup-seconds"&&arg!="--overflow-cleanup-rounds"&&arg!="--overflow-cleanup-blockers"&&arg!="--overflow-cleanup-group"&&arg!="--overflow-cleanup-same-die-blockers"&&arg!="--overflow-cleanup-final-seconds"&&arg!="--wirelength-polish-seconds"&&arg!="--wirelength-polish-rounds"&&arg!="--initial-maze-expansions"&&arg!="--initial-maze-seconds"&&arg!="--objective-profile"&&!tree_move_options.count(arg)&&!low_layer_options.count(arg)&&!landing_options.count(arg)&&!v9_options.count(arg)&&!v8_options.count(arg)&&!recognized.count(arg)&&!recovery_options.count(arg)&&!v5_options.count(arg)&&!v7_options.count(arg)&&arg!="--score-profile") throw std::runtime_error("unknown option: "+arg);
             if(i+1>=argc) throw std::runtime_error("missing option value: "+arg);
             const std::string value=argv[++i];if(value.empty()||value[0]=='-') throw std::runtime_error("invalid option value: "+arg);
             if(arg=="--recovery-global-wirelength") {
@@ -192,6 +194,13 @@ int main(int argc,char** argv) {
             } else if(arg=="--overflow-cleanup-group") {
                 const int v=integer(value);if(v<1||v>32) throw std::runtime_error("overflow-cleanup-group must be 1..32");
                 options.overflow_cleanup_group=size_t(v);
+            } else if(arg=="--overflow-cleanup-same-die-blockers") {
+                const int v=integer(value);if(v>1) throw std::runtime_error("overflow-cleanup-same-die-blockers must be 0 or 1");
+                options.overflow_cleanup_same_die_blockers=v;
+            } else if(arg=="--overflow-cleanup-final-seconds") {
+                size_t end=0;const double v=std::stod(value,&end);
+                if(end!=value.size()||!std::isfinite(v)||v<0||v>7200) throw std::runtime_error("overflow-cleanup-final-seconds must be 0..7200");
+                options.overflow_cleanup_final_seconds=v;
             } else if(arg=="--wirelength-polish-seconds") {
                 size_t end=0;const double v=std::stod(value,&end);
                 if(end!=value.size()||!std::isfinite(v)||v<0||v>36000) throw std::runtime_error("wirelength-polish-seconds must be 0..36000");
