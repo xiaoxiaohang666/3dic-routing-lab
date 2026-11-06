@@ -297,18 +297,6 @@ std::optional<double> hottest_k_thermal_gain(const ThermalParser& thermal,const 
     if(!(bound>0) || !std::isfinite(double(bound))) return std::nullopt;
     return double(1.5L/bound);
 }
-double official_thermal_gain_for_def_file(const std::string& path) {
-    const auto name=std::filesystem::path(path).filename().string();
-    static const std::map<std::string,double> table{
-        {"open_3d_case001.input.def",11.684},{"ispd19_test001.input.def",11.684},
-        {"aes_sky130hs.input.def",1.719},{"open_3d_case002.input.def",1.719},
-        {"open_3d_case003.input.def",4.224},{"ispd19_test004.input.def",4.224},
-        {"ispd18_test005.input.def",12.350},{"open_3d_case004.input.def",12.350},
-        {"open_3d_case005.input.def",8.323},{"ispd18_test007.input.def",8.323},
-        {"ispd18_test010.input.def",18.996},{"open_3d_case006.input.def",18.996},
-        {"toy.input.def",21.492}};
-    const auto f=table.find(name);return f==table.end()?20.0:f->second;
-}
 NetGuideMetrics measure_official_net_guides(const Net& net,const std::vector<GuideRect>& raw,
     const RoutingGraph& graph,const LefParser& lef,const OfficialMetricOptions& o,double reference) {
     if(o.score_20261020!=graph.score_20261020())

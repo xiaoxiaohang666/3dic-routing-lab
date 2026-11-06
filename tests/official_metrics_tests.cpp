@@ -1,4 +1,5 @@
 #include "objectives/official_metrics.hpp"
+#include "../scripts/official_gain_table.hpp"
 #include <algorithm>
 #include <cmath>
 #include <filesystem>

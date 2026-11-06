@@ -83,10 +83,6 @@ private:
 // optimiser's T term; it is not an official calibration. Empty if degenerate.
 std::optional<double> hottest_k_thermal_gain(const ThermalParser& thermal,const GCellGrid& grid,size_t cross_nets);
 
-// Historical diagnostic helper only; production routing never calls it.
-// The published text does not provide this table or filename selection rule.
-double official_thermal_gain_for_def_file(const std::string& def_path);
-
 // Shared score in [0,100] for final measurement and candidate comparisons.
 // The October 20 profile requires a positive total reference and rewards
 // every nonnegative length <= reference with 100. Historical tent stays default.
