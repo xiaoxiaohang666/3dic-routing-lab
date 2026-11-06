@@ -88,6 +88,10 @@ set_target_properties(eda_diagnose_fixed_full_detours PROPERTIES RUNTIME_OUTPUT_
 add_executable(eda_diagnose_reference_gap scripts/diagnose_reference_gap.cpp)
 target_link_libraries(eda_diagnose_reference_gap PRIVATE eda_core)
 set_target_properties(eda_diagnose_reference_gap PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+# Read-only: each die's Guide wire length against a FLUTE tree on the same snapped points; never linked into the router.
+add_executable(eda_diagnose_two_tree_bound scripts/diagnose_two_tree_bound.cpp)
+target_link_libraries(eda_diagnose_two_tree_bound PRIVATE eda_core)
+set_target_properties(eda_diagnose_two_tree_bound PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 add_executable(eda_diagnose_tsv_attach scripts/diagnose_tsv_attach.cpp)
 target_link_libraries(eda_diagnose_tsv_attach PRIVATE eda_core)
 set_target_properties(eda_diagnose_tsv_attach PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
