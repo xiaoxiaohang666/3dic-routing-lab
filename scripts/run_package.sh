@@ -10,7 +10,7 @@ if [[ "${1:-}" == --help ]]; then
 Usage: bash scripts/run_package.sh --def FILE --lef FILE --thermal-report FILE --output NEW.guide [router options]
 Settings of run_fixed_resource_candidate.sh with --thermal-gain-estimate hottest-k
 instead of a per-case G. Later options override these values, for example an explicit
---thermal-gain G or --climb-escape-radius 0. Pass --time-limit; the package uses 6300. The overflow
+--thermal-gain G or --climb-escape-radius 0. Pass --time-limit; the package uses 10800. The overflow
 cleanup (800 s) and the end wirelength polish (1200 s) share the tail of the budget
 (--overflow-cleanup-seconds 0 / --wirelength-polish-seconds 0 turn them off). Every initial net also gets
 the bounded maze search (20000 expansions, 0.03 s; --initial-maze-expansions 0 turns it off).
