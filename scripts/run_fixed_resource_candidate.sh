@@ -9,4 +9,5 @@ exec bash "$ROOT/scripts/run_current.sh" \
     --rrr-reserved-seconds 2000 --rrr-rounds 64 \
     --v7-rrr-net-limit 32768 --rrr-net-limit 8192 \
     --congestion-target-q 30 --future-tsv-reservation 1 --climb-escape-radius 3 \
-    --time-limit 3000 "$@"
+    --overflow-cleanup-seconds 800 --overflow-cleanup-blockers 1 \
+    --time-limit 3600 "$@"

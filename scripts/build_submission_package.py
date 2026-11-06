@@ -42,7 +42,7 @@ def main() -> int:
     p.add_argument("--output", type=pathlib.Path, required=True)
     p.add_argument("--label", required=True)
     p.add_argument("--source-commit", required=True)
-    p.add_argument("--time-limit", type=int, default=3000)
+    p.add_argument("--time-limit", type=int, default=3600)
     a = p.parse_args()
     if a.output.exists():
         p.error("output must be new: " + str(a.output))

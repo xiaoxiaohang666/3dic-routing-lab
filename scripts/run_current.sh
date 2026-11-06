@@ -9,7 +9,9 @@ Usage: bash scripts/run_current.sh --thermal-gain G --def FILE --lef FILE \
 Run on benchmark-host. G is required; no input-name lookup is performed.
 Public G: 001=11.684, 003=4.224, 005=8.323. Hidden-case G is unconfirmed.
 Defaults: mature A150 preset; site-20261029 objective; experimental v13 flags off;
-sideways step before a via climb at radius 3 (--climb-escape-radius 0 turns it off).
+sideways step before a via climb at radius 3 (--climb-escape-radius 0 turns it off);
+end-of-run overflow cleanup for the last 800 s of the budget, rerouting blocking nets
+together (--overflow-cleanup-seconds 0 turns it off).
 Later router options can change budgets/operators; the production contract is fixed.
 TSVs are banned only on cells with PIN/OBS on M10/M11 (official Q&A and returned scores,
 docs/rules/qa-notes-20261105.md). EDA_TSV_OBSTACLE_SCOPE=all-layers restores the older rule.
