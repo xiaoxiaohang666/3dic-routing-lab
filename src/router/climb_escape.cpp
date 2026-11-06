@@ -71,4 +71,12 @@ std::vector<int> ClimbEscapeField::path_to(int node,const RoutingGraph& graph) c
     std::reverse(path.begin(),path.end());
     return path;
 }
+// Whether the way to `node` steps off the terminal's column. An exit in that
+// column can still have stepped aside: leave a full cell by the next column,
+// then return above it. Only a straight climb equals the template.
+bool ClimbEscapeField::leaves_column(int node,const RoutingGraph& graph) const {
+    for(int n=node;n!=-1;n=parent[size_t(index(n,graph))])
+        if(graph.col(n)!=c0 || graph.row(n)!=r0) return true;
+    return false;
+}
 }
