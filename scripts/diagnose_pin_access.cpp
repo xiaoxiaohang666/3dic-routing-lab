@@ -12,8 +12,17 @@
 //     whether the reference GCell is one of them;
 //   * whether the reference GCell is full of fixed PIN/OBS demand on the pin
 //     layer and on the next layer.
+// With --guide, it also measures on that Guide what the single access costs:
+// when the net's run on the next layer ends at the reference GCell after
+// crossing other GCells of the same pin, reaching the pin at the first of those
+// GCells instead would shorten that run. Counted only when no other rectangle
+// of the net touches the cut-off cells on the next layer or the layers around
+// it, so it is a conservative count of directly removable cells.
 // Nothing is routed or written back; offline diagnosis only.
 #include "router/negotiated_router.hpp"
+#include "scoring/compat_validation.hpp"
+#include <unordered_map>
+#include <unordered_set>
 #include <algorithm>
 #include <array>
 #include <filesystem>
@@ -39,15 +48,34 @@ std::string bucket(size_t p) {
 }
 namespace eda {
 struct PinLocalTestAccess {
-  static void run(NegotiatedRouter& router,const DefParser& def,const fs::path& out) {
+  static void run(NegotiatedRouter& router,const DefParser& def,const LefParser& lef,const std::map<std::string,std::vector<GuideRect>>* guides,const fs::path& out) {
     const auto& g=router.graph_;const auto& grid=g.grid();
     std::ofstream csv(out/"pins.csv");
     csv<<"net,class,pin,owner,ref_layer,layers,next_layer_rect,rects,ref_layer_cells,all_cells,ref_cell_covered,"
          "ref_full,ref_capacity,ref_fixed,next_full,next_capacity,next_fixed\n";
     std::map<std::string,std::array<size_t,8>> by;  // class -> counters
+    std::map<std::string,std::array<long double,3>> cut;  // class -> pins cut, cells cut, DBU cut
     size_t pins=0;
+    const auto& mo=router.options_.official_metrics;
     for(const auto& net:def.nets()) {
         const std::string cls=std::string(net.is_cross_die?"cross:":"same:")+bucket(net.pins.size());
+        // Per layer, the cells each Guide rectangle covers (only with --guide).
+        std::array<std::vector<std::array<int,4>>,21> rects;  // c0,c1,r0,r1 (half-open)
+        std::array<std::unordered_map<long long,int>,21> cover;  // cell -> number of rects covering
+        if(guides) {
+            const auto found=guides->find(net.name);
+            if(found==guides->end()) throw std::runtime_error("net without Guide: "+net.name);
+            for(const auto& r:found->second) {
+                const int l=get_layer_index(r.layer);if(l<1||l>20) continue;
+                const auto [cb,ce]=span_cells(r.x1,r.x2,grid.x_lines);const auto [rb,re]=span_cells(r.y1,r.y2,grid.y_lines);
+                if(cb>=ce||rb>=re) continue;
+                rects[size_t(l)].push_back({cb,ce,rb,re});
+                for(int rr=rb;rr<re;++rr) for(int cc=cb;cc<ce;++cc) ++cover[size_t(l)][(long long)rr*grid.cols+cc];
+            }
+        }
+        // Reference cells of all pins of the net: a cut must not strand another pin.
+        std::set<std::pair<int,long long>> ref_points;
+        for(const auto& pin:net.pins) ref_points.insert({pin.layer_idx,(long long)grid.get_row(pin.coord.y)*grid.cols+grid.get_col(pin.coord.x)});
         std::set<std::string> seen;
         for(const auto& pin:net.pins) {
             if(!seen.insert(pin.name).second) continue;
@@ -72,6 +100,35 @@ struct PinLocalTestAccess {
             const double cap0=g.official_capacity(n0),cap1=g.official_capacity(n1);
             const double fix0=g.official_obstacle_demand(n0),fix1=g.official_obstacle_demand(n1);
             const bool full0=fix0>=cap0,full1=fix1>=cap1;
+            if(guides && ref_cells.size()>1) {
+                // Next-layer rectangles of this net that contain the reference cell.
+                const bool horiz=lef.get_layer_direction(get_layer_name(next))==Direction::HORIZONTAL;
+                for(const auto& q:rects[size_t(next)]) {
+                    if(c<q[0]||c>=q[1]||r<q[2]||r>=q[3]) continue;
+                    const int lo=horiz?q[0]:q[2],hi=horiz?q[1]-1:q[3]-1,at=horiz?c:r;
+                    if(lo==hi || (at!=lo&&at!=hi)) continue;  // reference cell must end the run
+                    const int dir=at==hi?-1:1;  // walk from the reference cell back along the run
+                    int last_pin=at;
+                    for(int i=at+dir;i>=lo&&i<=hi;i+=dir) {
+                        const long long key=horiz?(long long)r*grid.cols+i:(long long)i*grid.cols+c;
+                        if(!ref_cells.count(key)) break;
+                        last_pin=i;
+                    }
+                    if(last_pin==at) continue;
+                    // Cells after last_pin up to the reference cell would be cut; nothing else may use them.
+                    bool clean=true;int cells=0;
+                    for(int i=at;i!=last_pin;i-=dir) {
+                        const long long key=horiz?(long long)r*grid.cols+i:(long long)i*grid.cols+c;
+                        if(cover[size_t(next)][key]!=1) clean=false;
+                        if(i!=at && ref_points.count({l0,key})) clean=false;
+                        for(int l2:{next-1,next+1}) if(l2>=1&&l2<=20&&l2!=l0&&cover[size_t(l2)].count(key)) clean=false;
+                        ++cells;
+                    }
+                    if(!clean) continue;
+                    auto& k=cut[cls];k[0]+=1;k[1]+=cells;k[2]+=cells*(horiz?mo.gcell_width_dbu:mo.gcell_height_dbu);
+                    break;
+                }
+            }
             std::string ls;for(int l:layers) ls+=(ls.empty()?"":"|")+std::to_string(l);
             const char* owner=pin.owner_type==PinOwnerType::CORE_CELL?"core":pin.owner_type==PinOwnerType::BLOCK_MACRO?"block":
                 pin.instance_name.empty()?"io":"other";
@@ -93,7 +150,15 @@ struct PinLocalTestAccess {
     }
     s<<"},\"all\":{\"pins\":"<<all[0]<<",\"multi_layer\":"<<all[1]<<",\"next_layer_rect\":"<<all[2]
      <<",\"ref_layer_multi_cell\":"<<all[3]<<",\"any_layer_multi_cell\":"<<all[4]<<",\"ref_cell_not_covered\":"<<all[5]
-     <<",\"ref_cell_full\":"<<all[6]<<",\"next_layer_cell_full\":"<<all[7]<<"}}\n";
+     <<",\"ref_cell_full\":"<<all[6]<<",\"next_layer_cell_full\":"<<all[7]<<'}';
+    if(guides) {
+        long double p=0,cells=0,dbu=0;s<<",\"guide_cut\":{";bool f2=true;
+        for(const auto& [k,v]:cut) {p+=v[0];cells+=v[1];dbu+=v[2];
+            s<<(f2?"":",")<<'"'<<k<<"\":{\"pins\":"<<double(v[0])<<",\"cells\":"<<double(v[1])<<",\"dbu\":"<<double(v[2])<<'}';f2=false;}
+        s<<"},\"guide_cut_all\":{\"pins\":"<<double(p)<<",\"cells\":"<<double(cells)<<",\"dbu\":"<<double(dbu)<<'}';
+        std::cout<<"guide_cut pins="<<double(p)<<" cells="<<double(cells)<<" dbu="<<double(dbu)<<'\n';
+    }
+    s<<"}\n";
     std::cout<<"done pins="<<all[0]<<" multi_layer="<<all[1]<<" next_layer_rect="<<all[2]<<" ref_multi_cell="<<all[3]
              <<" any_multi_cell="<<all[4]<<" ref_not_covered="<<all[5]<<" ref_full="<<all[6]<<" next_full="<<all[7]<<'\n';
   }
@@ -118,8 +183,10 @@ int main(int argc,char** argv) {
     o.tsv_policy.resource_mode=TsvResourceMode::GLOBAL_GRID;o.tsv_policy.tsv_obstacle_scope=TsvObstacleScope::INTERFACE;o.official_metrics.tsv_congestion_ratio=1;
     o.fast_initial=true;o.fast_quality=true;o.v7_cell_cost=true;o.official_score_pricing=true;o.climb_escape_radius=3;
     o.v7_topology=true;o.time_limit=40000;
+    std::map<std::string,std::vector<GuideRect>> copy;
+    if(a.count("--guide")) {const auto g=compat::read_guides(a.at("--guide"));copy.insert(g.begin(),g.end());}
     NegotiatedRouter router(def,lef,thermal,o);
-    PinLocalTestAccess::run(router,def,out);
+    PinLocalTestAccess::run(router,def,lef,a.count("--guide")?&copy:nullptr,out);
     return 0;
   } catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}
 }
