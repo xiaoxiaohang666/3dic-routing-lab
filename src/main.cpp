@@ -22,6 +22,9 @@ void usage(const char* p) {
         <<"--v9-adaptive-budget 0|1 (stage allocation by measured gain/time, unified process clock)\n"
         <<"--v8-rrr 0|1 --v8-rrr-group-size N (1..256, default 48; hotspot transactions)\n"
         <<"--hotspot-cell-limit N (0..4096; default 0; opt-in concentrated hotspot selection)\n"
+        <<"--overflow-cleanup-seconds S (0..7200; default 0=off; final pass rerouting each overflowing net alone, time taken from the same deadline)\n"
+        <<"--overflow-cleanup-rounds N (1..64, default 4) --overflow-cleanup-blockers 0|1 (default 0; also lift nets filling full cells next to it)\n"
+        <<"--overflow-cleanup-group N (1..32, default 8; most extra nets lifted with one overflowing net)\n"
         <<"--via-stack-radius N (0..3; default 0; local ordinary-via relocation during V8 RRR)\n"
         <<"--climb-escape-radius N (0..8; default 3 under --model official with the a150-20261029 rules and fast quality, otherwise 0; offer a sideways step before a via climb through full cells)\n"
         <<"--recovery-global-wirelength 0|1 (global-W recovery shortlist; default 0)\n"
@@ -133,7 +136,7 @@ int main(int argc,char** argv) {
                 "--future-tsv-reservation","--resource-local-rrr","--joint-layer-recovery","--resource-candidate-pool","--thermal-coverage","--tsv-index-reuse","--checkpoint-reuse","--checkpoint-amortization"};
             const std::set<std::string> low_layer_options={"--low-layer-mask","--low-layer-seconds","--low-layer-max-attempts","--rrr-reserved-seconds"};
             const std::set<std::string> tree_move_options={"--tsv-tree-move","--tsv-tree-move-seconds","--tsv-tree-move-expansions"};
-            if(arg!="--recovery-global-wirelength"&&arg!="--via-stack-radius"&&arg!="--climb-escape-radius"&&arg!="--hotspot-cell-limit"&&arg!="--objective-profile"&&!tree_move_options.count(arg)&&!low_layer_options.count(arg)&&!landing_options.count(arg)&&!v9_options.count(arg)&&!v8_options.count(arg)&&!recognized.count(arg)&&!recovery_options.count(arg)&&!v5_options.count(arg)&&!v7_options.count(arg)&&arg!="--score-profile") throw std::runtime_error("unknown option: "+arg);
+            if(arg!="--recovery-global-wirelength"&&arg!="--via-stack-radius"&&arg!="--climb-escape-radius"&&arg!="--hotspot-cell-limit"&&arg!="--overflow-cleanup-seconds"&&arg!="--overflow-cleanup-rounds"&&arg!="--overflow-cleanup-blockers"&&arg!="--overflow-cleanup-group"&&arg!="--objective-profile"&&!tree_move_options.count(arg)&&!low_layer_options.count(arg)&&!landing_options.count(arg)&&!v9_options.count(arg)&&!v8_options.count(arg)&&!recognized.count(arg)&&!recovery_options.count(arg)&&!v5_options.count(arg)&&!v7_options.count(arg)&&arg!="--score-profile") throw std::runtime_error("unknown option: "+arg);
             if(i+1>=argc) throw std::runtime_error("missing option value: "+arg);
             const std::string value=argv[++i];if(value.empty()||value[0]=='-') throw std::runtime_error("invalid option value: "+arg);
             if(arg=="--recovery-global-wirelength") {
@@ -145,6 +148,19 @@ int main(int argc,char** argv) {
             } else if(arg=="--climb-escape-radius") {
                 const int radius=integer(value);if(radius>8) throw std::runtime_error("climb escape radius out of range");
                 options.climb_escape_radius=radius;explicit_climb_radius=true;
+            } else if(arg=="--overflow-cleanup-seconds") {
+                size_t end=0;const double v=std::stod(value,&end);
+                if(end!=value.size()||!std::isfinite(v)||v<0||v>7200) throw std::runtime_error("overflow-cleanup-seconds must be 0..7200");
+                options.overflow_cleanup_seconds=v;
+            } else if(arg=="--overflow-cleanup-rounds") {
+                const int v=integer(value);if(v<1||v>64) throw std::runtime_error("overflow-cleanup-rounds must be 1..64");
+                options.overflow_cleanup_rounds=v;
+            } else if(arg=="--overflow-cleanup-blockers") {
+                const int v=integer(value);if(v>1) throw std::runtime_error("overflow-cleanup-blockers must be 0 or 1");
+                options.overflow_cleanup_blockers=v;
+            } else if(arg=="--overflow-cleanup-group") {
+                const int v=integer(value);if(v<1||v>32) throw std::runtime_error("overflow-cleanup-group must be 1..32");
+                options.overflow_cleanup_group=size_t(v);
             } else if(arg=="--hotspot-cell-limit") {
                 const int count=integer(value);if(count>4096) throw std::runtime_error("hotspot cell limit out of range");
                 options.hotspot_cell_limit=size_t(count);
