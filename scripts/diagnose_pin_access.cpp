@@ -117,9 +117,10 @@ struct PinLocalTestAccess {
                     if(last_pin==at) continue;
                     // Cells after last_pin up to the reference cell would be cut; nothing else may use them.
                     bool clean=true;int cells=0;
-                    for(int i=at;i!=last_pin;i-=dir) {
+                    for(int i=at;i!=last_pin;i+=dir) {  // from the reference cell towards last_pin, last_pin kept
                         const long long key=horiz?(long long)r*grid.cols+i:(long long)i*grid.cols+c;
-                        if(cover[size_t(next)][key]!=1) clean=false;
+                        const auto own=cover[size_t(next)].find(key);
+                        if(own==cover[size_t(next)].end()||own->second!=1) clean=false;
                         if(i!=at && ref_points.count({l0,key})) clean=false;
                         for(int l2:{next-1,next+1}) if(l2>=1&&l2<=20&&l2!=l0&&cover[size_t(l2)].count(key)) clean=false;
                         ++cells;
