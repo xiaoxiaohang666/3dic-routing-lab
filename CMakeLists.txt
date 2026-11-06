@@ -80,6 +80,10 @@ set_target_properties(eda_replay_overflow_nets PROPERTIES RUNTIME_OUTPUT_DIRECTO
 add_executable(eda_replay_sample_nets scripts/replay_sample_nets.cpp)
 target_link_libraries(eda_replay_sample_nets PRIVATE eda_core)
 set_target_properties(eda_replay_sample_nets PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+# Read-only: detour around cells that fixed PIN/OBS fill, and what fills them; never linked into the router.
+add_executable(eda_diagnose_fixed_full_detours scripts/diagnose_fixed_full_detours.cpp)
+target_link_libraries(eda_diagnose_fixed_full_detours PRIVATE eda_core)
+set_target_properties(eda_diagnose_fixed_full_detours PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 add_executable(eda_diagnose_tsv_attach scripts/diagnose_tsv_attach.cpp)
 target_link_libraries(eda_diagnose_tsv_attach PRIVATE eda_core)
 set_target_properties(eda_diagnose_tsv_attach PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
