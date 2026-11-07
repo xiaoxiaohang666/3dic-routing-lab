@@ -30,6 +30,7 @@ struct RoutingGraphOptions {
     bool documented_rules{false}; // Actual PIN layers and unique physical track coordinates.
     bool pin_zero_track_floor{false}; // Separate 20261029 profile; old A150 remains unchanged.
     double congestion_overflow_scale{0.1}; // Versioned scalar, same resource contract.
+    bool observed_fixed_20261104{false}; // Opt-in fixed demand fitted to 11-04 platform maps; documented_rules only.
 };
 
 // Resource graph in global DEF DBU. PHYSICAL_STRICT retains preferred-direction

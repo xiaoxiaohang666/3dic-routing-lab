@@ -57,6 +57,9 @@ Resources::Resources(const DefParser& def, const LefParser& lef, ResourceOptions
     if(options_.pin_zero_track_floor &&
        (options_.pin_first_layer || !options_.deduplicate_tracks || options_.platform_20261024))
         throw std::runtime_error("zero-track PIN floor requires actual-layer unique-track resources without historical overrides");
+    if(options_.observed_fixed_20261104 &&
+       (options_.pin_first_layer || !options_.deduplicate_tracks || options_.platform_20261024 || options_.pin_zero_track_floor))
+        throw std::runtime_error("observed fixed resources require actual-layer unique tracks and no other floor model");
     if (!grid_.valid() || !std::isfinite(def.dbu_per_micron()) || def.dbu_per_micron() <= 0)
         throw std::runtime_error("compatibility resources require a valid DEF grid and units");
     plane_ = static_cast<size_t>(grid_.cols) * static_cast<size_t>(grid_.rows);
@@ -125,10 +128,32 @@ Resources::Resources(const DefParser& def, const LefParser& lef, ResourceOptions
         if(begin>=end) return {0,0};
         return {checked_count(size_t(begin-values.begin())),checked_count(size_t(end-values.begin()))};
     };
-    std::array<std::vector<Rect>, 21> occupied;
+    auto half_open_interval=[&](const Rect& rect,int layer,int col,int row)->Interval {
+        const auto& values=tracks[layer];
+        const bool horizontal=directions_[layer]==Direction::HORIZONTAL;
+        const auto& lines=horizontal?grid_.y_lines:grid_.x_lines;
+        const size_t band=size_t(horizontal?row:col);
+        const double low=std::max(horizontal?rect.y1:rect.x1,lines[band]),
+                     high=std::min(horizontal?rect.y2:rect.x2,lines[band+1]);
+        const auto begin=std::lower_bound(values.begin(),values.end(),low);
+        const auto end=std::lower_bound(values.begin(),values.end(),high);
+        if(begin>=end) return {0,0};
+        return {checked_count(size_t(begin-values.begin())),checked_count(size_t(end-values.begin()))};
+    };
+    auto previous_track=[&](const Rect& rect,int layer,int col,int row)->Interval {
+        const auto& values=tracks[layer];
+        const bool horizontal=directions_[layer]==Direction::HORIZONTAL;
+        const auto& lines=horizontal?grid_.y_lines:grid_.x_lines;
+        const size_t band=size_t(horizontal?row:col);
+        const double low=std::max(horizontal?rect.y1:rect.x1,lines[band]);
+        const size_t next=size_t(std::lower_bound(values.begin(),values.end(),low)-values.begin());
+        const uint32_t index=checked_count(next>0?next-1:0);
+        return {index,index+1};
+    };
+    std::array<std::vector<Rect>, 21> occupied,observed_pins;
     auto add_pin_shape=[&](const Rect& rect,int layer,std::unordered_map<int,bool>* pin_cells) {
         if(layer<1 || layer>20) return;
-        occupied[layer].push_back(rect);
+        (options_.observed_fixed_20261104?observed_pins:occupied)[layer].push_back(rect);
         if(!pin_cells) return;
         visit_cells(rect,grid_,[&](int col,int row) {
             auto& has_track=(*pin_cells)[node(col,row,layer)];
@@ -181,13 +206,21 @@ Resources::Resources(const DefParser& def, const LefParser& lef, ResourceOptions
         const auto& values = tracks[l];
         if (values.empty()) {
             std::vector<Rect>().swap(occupied[l]);
+            std::vector<Rect>().swap(observed_pins[l]);
             continue;
         }
         std::unordered_map<size_t, std::vector<Interval>> ranges;
         for (const auto& rect : occupied[l]) {
             visit_cells(rect,grid_,[&](int col,int row) {
-                const auto span=track_interval(rect,l,col,row);
+                const auto span=options_.observed_fixed_20261104?half_open_interval(rect,l,col,row):track_interval(rect,l,col,row);
                 if(span.first<span.second) ranges[size_t(row)*size_t(grid_.cols)+size_t(col)].push_back(span);
+            });
+        }
+        for (const auto& rect : observed_pins[l]) {
+            visit_cells(rect,grid_,[&](int col,int row) {
+                auto span=half_open_interval(rect,l,col,row);
+                if(span.first>=span.second) span=previous_track(rect,l,col,row);
+                ranges[size_t(row)*size_t(grid_.cols)+size_t(col)].push_back(span);
             });
         }
         for (auto& [cell, intervals] : ranges) {
@@ -204,9 +237,14 @@ Resources::Resources(const DefParser& def, const LefParser& lef, ResourceOptions
                 }
             }
             count += end - begin;
+            if(options_.observed_fixed_20261104) {
+                const size_t band=directions_[l]==Direction::HORIZONTAL?cell/size_t(grid_.cols):cell%size_t(grid_.cols);
+                count=std::min<size_t>(count,capacities_[l][band]);
+            }
             fixed_demand_[static_cast<size_t>(l - 1) * plane_ + cell] = checked_count(count);
         }
         std::vector<Rect>().swap(occupied[l]);
+        std::vector<Rect>().swap(observed_pins[l]);
         std::vector<double>().swap(tracks[l]);
     }
     for(const auto [id,floor]:pin_floor_demand_) {

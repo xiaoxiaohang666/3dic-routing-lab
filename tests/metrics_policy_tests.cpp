@@ -1,4 +1,5 @@
 #include "objectives/guide_metrics.hpp"
+#include "objectives/official_metrics.hpp"
 #include "router/tsv_policy.hpp"
 #include <filesystem>
 #include <numeric>
@@ -147,10 +148,22 @@ void test_sample_policy(const fs::path& root) {
     require(metric.tsv_points.empty(),"ordinary same-die guide has no TSV");
 }
 }
+void test_congestion_target() {
+    OfficialMetricOptions off,on;on.congestion_target_q=4.0;
+    const auto exact=[](double q){return 100.0/std::sqrt(1.0+q);};
+    for(double q:{0.0,0.5,4.0,10.0,1e5}) require(off.congestion_target_q<0&&official_acceptance_congestion(q,off)==exact(q),"off keeps true C");
+    for(double q:{0.0,0.5,4.0}) require(std::abs(official_acceptance_congestion(q,on)-exact(q))<1e-12,"true C at or below target");
+    const double e=1e-6,left=(exact(4.0)-exact(4.0-e))/e,right=(official_acceptance_congestion(4.0+e,on)-official_acceptance_congestion(4.0,on))/e;
+    require(std::abs(left-right)<1e-3,"tangent slope continuity at target");
+    // Above the target an overflow unit keeps its target-point value instead of vanishing.
+    const double high=official_acceptance_congestion(1000.0,on)-official_acceptance_congestion(1001.0,on);
+    require(std::abs(high-(exact(4.0)-exact(5.0)))<2.0&&high>1.0,"tangent extension prices high Q");
+    require(official_acceptance_congestion(1000.0,on)>official_acceptance_congestion(1001.0,on),"monotone above target");
+}
 int main(int argc,char** argv) {
     try {
         if(argc!=2) throw std::runtime_error("expected source directory");
-        test_pearson();test_sample_policy(argv[1]);
+        test_pearson();test_sample_policy(argv[1]);test_congestion_target();
         std::cout<<"PASS: "<<checks<<" metrics/policy checks\n";
         return 0;
     } catch(const std::exception& error) {

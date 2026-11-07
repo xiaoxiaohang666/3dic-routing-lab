@@ -430,7 +430,7 @@ OfficialGuideMetrics aggregate_official_metrics(const std::vector<const NetGuide
         throw std::runtime_error("official thermal scoring requires positive temperature rise");
     out.correlation=PearsonState(std::move(heat),std::move(tsv_counts)).correlation();
     result.wirelength_score=official_wirelength_score(out.wirelength,out.reference,o);
-    result.congestion_score=100.0/std::sqrt(1.0+double(sum));
+    result.congestion_score=official_acceptance_congestion(double(sum),o);
     result.thermal_score=100.0*(0.5+0.5*std::tanh(o.thermal_gain*out.correlation));
     out.quality=(0.45*result.wirelength_score+0.30*result.congestion_score+0.25*result.thermal_score)/100.0;
     return result;

@@ -141,7 +141,7 @@ RoutingGraph::RoutingGraph(const DefParser& def, const LefParser& lef, RoutingGr
             // and physical tracks as a set. Historical scorer conventions are
             // retained solely for offline compatibility diagnostics.
             const compat::ResourceOptions resources = documented_rules()
-                ? compat::ResourceOptions{false,true,false,options_.pin_zero_track_floor}
+                ? compat::ResourceOptions{false,true,false,options_.pin_zero_track_floor&&!options_.observed_fixed_20261104,options_.observed_fixed_20261104}
                 : compat::ResourceOptions{true,false,platform_resources()};
             updated_resources_=std::make_shared<compat::Resources>(def,lef,resources);
         }
