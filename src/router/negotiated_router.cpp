@@ -1,5 +1,6 @@
 #include "router/negotiated_router.hpp"
 #include "router/cost_diagnostics.hpp"
+#include "router/guide_local_edit.hpp"
 #include "objectives/net_cell_contribution.hpp"
 #include "scoring/compat_validation.hpp"
 #include "validation/gcell_encoding.hpp"
@@ -24,6 +25,13 @@ RouterOptions documented_options(RouterOptions o) {
     if(o.via_stack_radius<0 || o.via_stack_radius>3 ||
        (o.via_stack_radius && (!o.v8_rrr || !o.official_model || !o.official_metrics.score_20261020)))
         throw std::invalid_argument("via stack repair requires radius 0..3 and documented V8 RRR");
+    if(o.climb_escape_radius<0 || o.climb_escape_radius>8 ||
+       (o.climb_escape_radius && (!o.official_model || !o.official_metrics.score_20261020 || !o.fast_quality)))
+        throw std::invalid_argument("climb escape requires radius 0..8, documented official rules and fast quality search");
+    if(!std::isfinite(o.guide_local_edit_seconds) || o.guide_local_edit_seconds<0 ||
+       (o.guide_local_edit_seconds>0 && (!o.official_model || !o.official_metrics.score_20261020 ||
+        o.tsv_policy.resource_mode!=TsvResourceMode::GLOBAL_GRID)))
+        throw std::invalid_argument("local Guide edits require documented official global-grid routing");
     if(o.official_model && o.official_metrics.score_20261020) {
         // Historical compatibility resources are only for offline diagnosis.
         // They must never decide a production routing transaction.
@@ -129,7 +137,7 @@ NegotiatedRouter::NegotiatedRouter(const DefParser& d,const LefParser& l,const T
     // Keep part of even a short explicit budget available for final encoding/export.
     const double reserve=std::min(60.0,std::max(0.01,options_.time_limit*0.1));
     deadline_=started_+std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-        std::chrono::duration<double>(std::max(0.0,options_.time_limit-reserve)));
+        std::chrono::duration<double>(std::max(0.0,options_.time_limit-reserve-options_.guide_local_edit_seconds)));
 }
 const std::vector<int>& NegotiatedRouter::cell_owners(int node) const {
     static const std::vector<int> empty;
@@ -647,6 +655,14 @@ PathResult NegotiatedRouter::search(const std::vector<PinAccess>& sources,const 
         }
         return std::pair(cost,options_.score_unit_cost || cost>base+1e-9);
     };
+    // Fields stay null unless a terminal column really crosses a full cell, so
+    // uncongested designs pay only for this check.
+    std::map<int,std::optional<ClimbEscapeField>> escape_fields;
+    const auto escape_field=[&](int terminal)->const ClimbEscapeField* {
+        auto [found,inserted]=escape_fields.try_emplace(terminal);
+        if(inserted && climb_column_congested(terminal,own,low,high)) found->second=climb_escape_field(terminal,own,low,high);
+        return found->second?&*found->second:nullptr;
+    };
     if(!dijkstra) {
         std::vector<std::pair<double,int>> ranked;ranked.reserve(targets.size());
         for(int n:targets) {
@@ -795,6 +811,59 @@ PathResult NegotiatedRouter::search(const std::vector<PinAccess>& sources,const 
                 stack(graph_.layer(target));if(!legal||path.back()!=target) continue;
                 consider(std::move(path),si);
                 if(kind<2) pair_has_legal_l=true;
+              }
+            }
+            const ClimbEscapeField* from=nullptr;const ClimbEscapeField* to=nullptr;
+            if(improve_fast && options_.climb_escape_radius>0) {from=escape_field(source);to=escape_field(target);}
+            if(from || to) {
+              ++counters_.climb_escape_searches;
+              for(auto [rank,h,v]:pairs) for(int kind:{0,1}) {
+                (void)rank;
+                const int first=kind==0?h:v,last=kind==0?v:h;
+                const int begin=from?climb_escape_exit(*from,first,target):-1;
+                const int end=to?climb_escape_exit(*to,last,source):-1;
+                const bool shifted_begin=begin>=0 && (graph_.col(begin)!=graph_.col(source) || graph_.row(begin)!=graph_.row(source));
+                const bool shifted_end=end>=0 && (graph_.col(end)!=graph_.col(target) || graph_.row(end)!=graph_.row(target));
+                // The unshifted combination is the template tried just above.
+                if(!shifted_begin && !shifted_end) continue;
+                std::vector<int> path=shifted_begin?from->path_to(begin,graph_):std::vector<int>{source};
+                bool legal=true;
+                auto append=[&](int n) {if(!legal)return;if(n<0||!graph_.legal_edge(path.back(),n)){legal=false;return;}path.push_back(n);};
+                auto stack=[&](int l) {while(legal&&graph_.layer(path.back())!=l) {
+                    const int n=path.back();append(graph_.node(graph_.col(n),graph_.row(n),graph_.layer(n)+(l>graph_.layer(n)?1:-1)));}};
+                auto leg=[&](int c,int r,int l) {
+                    if(graph_.col(path.back())==c && graph_.row(path.back())==r) return;
+                    stack(l);
+                    while(legal&&(graph_.col(path.back())!=c||graph_.row(path.back())!=r)) {
+                        const int n=path.back();int nc=graph_.col(n),nr=graph_.row(n);
+                        if(nc!=c) nc+=c>nc?1:-1;else nr+=r>nr?1:-1;
+                        append(graph_.node(nc,nr,l));
+                    }
+                };
+                const int finish=shifted_end?end:target;
+                const int sc=graph_.col(path.back()),sr=graph_.row(path.back()),tc=graph_.col(finish),tr=graph_.row(finish);
+                if(kind==0) {leg(tc,sr,h);leg(tc,tr,v);}
+                else {leg(sc,tr,v);leg(tc,tr,h);}
+                stack(graph_.layer(finish));
+                if(!legal || path.back()!=finish) continue;
+                if(shifted_end) {
+                    auto tail=to->path_to(end,graph_);
+                    path.insert(path.end(),tail.rbegin()+1,tail.rend());
+                }
+                // A shift can run back over its own wire; drop any such loop.
+                std::vector<int> simple;simple.reserve(path.size());std::unordered_map<int,size_t> seen;
+                for(int n:path) {
+                    const auto found=seen.find(n);
+                    if(found!=seen.end()) {
+                        for(size_t k=found->second+1;k<simple.size();++k) seen.erase(simple[k]);
+                        simple.resize(found->second+1);
+                    } else {seen.emplace(n,simple.size());simple.push_back(n);}
+                }
+                if(simple.back()!=target) continue;
+                ++counters_.climb_escape_candidates;
+                const double previous=incumbent.cost;
+                consider(std::move(simple),si);
+                if(incumbent.cost<previous) ++counters_.climb_escape_wins;
               }
             }
         }
@@ -2076,6 +2145,65 @@ void NegotiatedRouter::validate_complete() const {
     validated_generation_=state_generation_;
     complete_validation_cached_=true;
 }
+// Runs after routing has finished, on Guides rather than graph edges. Nothing
+// here changes until every edit succeeded and the full ledger agrees again.
+void NegotiatedRouter::run_guide_local_edit() {
+    if(options_.guide_local_edit_seconds<=0) return;
+    deadline_+=std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(options_.guide_local_edit_seconds));
+    std::vector<std::pair<size_t,NetRoute>> saved;
+    const auto before=best_metrics_;
+    counters_.guide_local_edit_q_before=counters_.guide_local_edit_q_after=before.official.squared_normalized_overflow;
+    try {
+        std::vector<std::vector<GuideRect>> guides;std::vector<NetGuideMetrics> measured;
+        guides.reserve(routes_.size());measured.reserve(routes_.size());
+        for(const auto& route:routes_) {guides.push_back(route.guides);measured.push_back(route.measured);}
+        auto demand=demand_;
+        GuideLocalEditOptions edit;edit.deadline=deadline_;
+        const auto stats=edit_guides_locally(def_,graph_,lef_,options_.official_metrics,guides,measured,demand,before.guide.reference,edit);
+        counters_.guide_local_edit_stack_moves=stats.stack_accepted;
+        counters_.guide_local_edit_subtree_moves=stats.subtree_accepted;
+        counters_.guide_local_edit_elapsed=stats.seconds;
+        counters_.guide_local_edit_timed_out=stats.timed_out;
+        for(size_t i=0;i<routes_.size();++i) {
+            if(guides[i].size()==routes_[i].guides.size() && std::equal(guides[i].begin(),guides[i].end(),routes_[i].guides.begin(),
+                [](const GuideRect& a,const GuideRect& b){return a.x1==b.x1&&a.y1==b.y1&&a.x2==b.x2&&a.y2==b.y2&&a.layer==b.layer;})) continue;
+            std::string mapping_error;
+            if(!policy_.validate_mapping(def_.nets()[i],guides[i],routes_[i].slot,mapping_error)) {
+                ++counters_.guide_local_edit_failures;
+                ++rejection_reasons_[std::string("local Guide edit broke TSV mapping: ")+mapping_error];
+                continue;
+            }
+            saved.emplace_back(i,routes_[i]);
+            account(i,routes_[i],-1);
+            auto& route=routes_[i];
+            // Later stages must not re-encode from graph edges this edit replaced.
+            route.vias+=int(measured[i].ordinary_connections)-int(route.measured.ordinary_connections);
+            route.length+=measured[i].wirelength-route.measured.wirelength;
+            route.explicit_geometry=true;route.nodes.clear();route.edges.clear();
+            route.guides=std::move(guides[i]);route.measured=std::move(measured[i]);
+            account(i,route,1);
+        }
+        validate_complete();best_metrics_=measure();verify_official_ledger(best_metrics_);
+        counters_.guide_local_edit_nets=saved.size();
+        counters_.guide_local_edit_q_after=best_metrics_.official.squared_normalized_overflow;
+        if(best_metrics_.official.thermal_score!=before.official.thermal_score)
+            throw std::logic_error("local Guide edit changed the thermal score");
+        // Skipped nets above make the per-edit gains approximate; the total decides.
+        if(best_metrics_.guide.quality<before.guide.quality)
+            throw std::logic_error("local Guide edits lowered the total score");
+        std::cout<<"[GUIDE-EDIT] nets="<<saved.size()<<" Q="<<before.official.squared_normalized_overflow<<"->"<<best_metrics_.official.squared_normalized_overflow
+                 <<" quality="<<before.guide.quality<<"->"<<best_metrics_.guide.quality<<std::endl;
+    } catch(const std::exception& error) {
+        ++counters_.guide_local_edit_failures;
+        ++rejection_reasons_[std::string("local Guide edit stopped: ")+error.what()];
+        for(auto it=saved.rbegin();it!=saved.rend();++it) {
+            account(it->first,routes_[it->first],-1);routes_[it->first]=std::move(it->second);account(it->first,routes_[it->first],1);
+        }
+        counters_.guide_local_edit_nets=0;
+        counters_.guide_local_edit_q_after=before.official.squared_normalized_overflow;
+        validate_complete();best_metrics_=measure();verify_official_ledger(best_metrics_);
+    }
+}
 bool NegotiatedRouter::route_all() {
     try {
         auto assignment=policy_.assign(def_.nets(),thermal_,options_.unified_budget?deadline_:std::chrono::steady_clock::time_point::max());routes_.resize(def_.nets().size());
@@ -2152,6 +2280,7 @@ bool NegotiatedRouter::route_all() {
             if(!large_design()) recover_tsv_local();
         }
         validate_complete();best_metrics_=measure();
+        run_guide_local_edit();
         guides_.clear();for(size_t i=0;i<routes_.size();++i) guides_[def_.nets()[i].name]=routes_[i].guides;
         std::cout<<"[FINAL] guide_overflow="<<best_metrics_.guide.overflow<<" normalized="<<best_metrics_.guide.normalized
                  <<" TSV="<<best_metrics_.guide.tsv_count<<" expansions="<<counters_.expansions<<"\n";
@@ -2487,6 +2616,17 @@ bool NegotiatedRouter::export_stats(const std::string& path) const {
            <<",\"via_stack_illegal\":"<<counters_.via_stack_illegal
            <<",\"via_stack_selected_before_group_acceptance\":"<<counters_.via_stack_selected
            <<",\"via_stack_seconds\":"<<counters_.via_stack_seconds
+           <<",\"climb_escape_searches\":"<<counters_.climb_escape_searches
+           <<",\"climb_escape_candidates\":"<<counters_.climb_escape_candidates
+           <<",\"climb_escape_wins\":"<<counters_.climb_escape_wins
+           <<",\"guide_local_edit_nets\":"<<counters_.guide_local_edit_nets
+           <<",\"guide_local_edit_stack_moves\":"<<counters_.guide_local_edit_stack_moves
+           <<",\"guide_local_edit_subtree_moves\":"<<counters_.guide_local_edit_subtree_moves
+           <<",\"guide_local_edit_failures\":"<<counters_.guide_local_edit_failures
+           <<",\"guide_local_edit_elapsed\":"<<counters_.guide_local_edit_elapsed
+           <<",\"guide_local_edit_timed_out\":"<<(counters_.guide_local_edit_timed_out?"true":"false")
+           <<",\"guide_local_edit_q_before\":"<<counters_.guide_local_edit_q_before
+           <<",\"guide_local_edit_q_after\":"<<counters_.guide_local_edit_q_after
            <<",\"v8_rematch_groups\":"<<counters_.v8_rematch_groups
            <<",\"v8_rematch_candidates\":"<<counters_.v8_rematch_candidates
            <<",\"v8_rematch_accepted\":"<<counters_.v8_rematch_accepted
@@ -2566,6 +2706,8 @@ bool NegotiatedRouter::export_stats(const std::string& path) const {
            <<",\"v8_rrr_group_size\":"<<options_.v8_rrr_group_size
            <<",\"hotspot_cell_limit\":"<<options_.hotspot_cell_limit
            <<",\"via_stack_radius\":"<<options_.via_stack_radius
+           <<",\"climb_escape_radius\":"<<options_.climb_escape_radius
+           <<",\"guide_local_edit_seconds\":"<<options_.guide_local_edit_seconds
            <<",\"v8_tsv_probe_candidates\":"<<options_.v8_tsv_probe_candidates
            <<",\"v8_tsv_rematch_group_size\":"<<options_.v8_tsv_rematch_group_size
            <<",\"v8_tsv_rematch_nets\":"<<options_.v8_tsv_rematch_nets

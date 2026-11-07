@@ -23,6 +23,8 @@ void usage(const char* p) {
         <<"--v8-rrr 0|1 --v8-rrr-group-size N (1..256, default 48; hotspot transactions)\n"
         <<"--hotspot-cell-limit N (0..4096; default 0; opt-in concentrated hotspot selection)\n"
         <<"--via-stack-radius N (0..3; default 0; local ordinary-via relocation during V8 RRR)\n"
+        <<"--climb-escape-radius N (0..8; default 0; offer a sideways step before a via climb through full cells)\n"
+        <<"--guide-local-edit-seconds N (default 0; reserve N seconds after routing for local Guide edits; TSV positions stay fixed)\n"
         <<"--recovery-global-wirelength 0|1 (global-W recovery shortlist; default 0)\n"
         <<"--v8-tsv-rematch 0|1 --v8-tsv-rematch-group-size N (2..8, default 6)\n"
         <<"--v8-tsv-rematch-nets N (1..32768, default 256) --v8-tsv-rematch-seconds N (>0..3600)\n"
@@ -132,7 +134,7 @@ int main(int argc,char** argv) {
                 "--future-tsv-reservation","--resource-local-rrr","--joint-layer-recovery","--resource-candidate-pool","--thermal-coverage","--tsv-index-reuse","--checkpoint-reuse","--checkpoint-amortization"};
             const std::set<std::string> low_layer_options={"--low-layer-mask","--low-layer-seconds","--low-layer-max-attempts","--rrr-reserved-seconds"};
             const std::set<std::string> tree_move_options={"--tsv-tree-move","--tsv-tree-move-seconds","--tsv-tree-move-expansions"};
-            if(arg!="--recovery-global-wirelength"&&arg!="--via-stack-radius"&&arg!="--hotspot-cell-limit"&&arg!="--objective-profile"&&!tree_move_options.count(arg)&&!low_layer_options.count(arg)&&!landing_options.count(arg)&&!v9_options.count(arg)&&!v8_options.count(arg)&&!recognized.count(arg)&&!recovery_options.count(arg)&&!v5_options.count(arg)&&!v7_options.count(arg)&&arg!="--score-profile") throw std::runtime_error("unknown option: "+arg);
+            if(arg!="--recovery-global-wirelength"&&arg!="--via-stack-radius"&&arg!="--climb-escape-radius"&&arg!="--guide-local-edit-seconds"&&arg!="--hotspot-cell-limit"&&arg!="--objective-profile"&&!tree_move_options.count(arg)&&!low_layer_options.count(arg)&&!landing_options.count(arg)&&!v9_options.count(arg)&&!v8_options.count(arg)&&!recognized.count(arg)&&!recovery_options.count(arg)&&!v5_options.count(arg)&&!v7_options.count(arg)&&arg!="--score-profile") throw std::runtime_error("unknown option: "+arg);
             if(i+1>=argc) throw std::runtime_error("missing option value: "+arg);
             const std::string value=argv[++i];if(value.empty()||value[0]=='-') throw std::runtime_error("invalid option value: "+arg);
             if(arg=="--recovery-global-wirelength") {
@@ -141,6 +143,13 @@ int main(int argc,char** argv) {
             } else if(arg=="--via-stack-radius") {
                 const int radius=integer(value);if(radius>3) throw std::runtime_error("via stack radius out of range");
                 options.via_stack_radius=radius;
+            } else if(arg=="--climb-escape-radius") {
+                const int radius=integer(value);if(radius>8) throw std::runtime_error("climb escape radius out of range");
+                options.climb_escape_radius=radius;
+            } else if(arg=="--guide-local-edit-seconds") {
+                size_t end=0;const double seconds=std::stod(value,&end);
+                if(end!=value.size()||!std::isfinite(seconds)||seconds<0) throw std::runtime_error("invalid local Guide edit seconds");
+                options.guide_local_edit_seconds=seconds;
             } else if(arg=="--hotspot-cell-limit") {
                 const int count=integer(value);if(count>4096) throw std::runtime_error("hotspot cell limit out of range");
                 options.hotspot_cell_limit=size_t(count);

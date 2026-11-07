@@ -45,6 +45,11 @@ struct RouterOptions {
     // Translate ordinary via ladders along compatible endpoint directions.
     // Uses the existing complete RRR transaction; zero keeps the old path.
     int via_stack_radius{0};
+    // Search radius (GCells) for leaving a terminal column whose climb crosses
+    // full cells. Zero keeps the existing templates only.
+    int climb_escape_radius{0};
+    // Seconds reserved after routing for local Guide edits. Zero skips the stage.
+    double guide_local_edit_seconds{0};
     size_t v8_tsv_rematch_group_size{6}, v8_tsv_rematch_nets{256};
     double v8_tsv_rematch_seconds{30};
     // V9 mechanisms are independent for same-binary documented-rule ablations.
@@ -154,6 +159,10 @@ struct RouterCounters {
     double low_layer_seconds{}, low_layer_delta_q{}, low_layer_delta_length{}, low_layer_delta_score{};
     size_t via_stack_chains{}, via_stack_candidates{}, via_stack_illegal{}, via_stack_selected{};
     double via_stack_seconds{};
+    size_t climb_escape_searches{}, climb_escape_candidates{}, climb_escape_wins{};
+    size_t guide_local_edit_nets{}, guide_local_edit_stack_moves{}, guide_local_edit_subtree_moves{}, guide_local_edit_failures{};
+    double guide_local_edit_elapsed{}, guide_local_edit_q_before{}, guide_local_edit_q_after{};
+    bool guide_local_edit_timed_out{};
     size_t tsv_tree_move_attempted{}, tsv_tree_move_built{}, tsv_tree_move_unavailable{},
            tsv_tree_move_failures{}, tsv_tree_move_selected{}, tsv_tree_move_accepted{}, tsv_tree_move_compared{};
     double tsv_tree_move_seconds{}, tsv_tree_move_compared_length_delta{},
@@ -202,6 +211,19 @@ struct NetRoute {
     NetGuideMetrics measured;
     int slot{-1}, vias{};
     double length{};
+};
+// Costs from a terminal to the cells of a small window around its column.
+struct ClimbEscapeField {
+    int root{-1},radius{},c0{},r0{},low{},high{};
+    std::vector<double> distance;
+    std::vector<int> parent;
+    size_t size() const { return size_t(2*radius+1)*size_t(2*radius+1)*size_t(high-low+1); }
+    int index(int node,const RoutingGraph& graph) const {
+        const int dc=graph.col(node)-c0,dr=graph.row(node)-r0,l=graph.layer(node);
+        if(std::abs(dc)>radius || std::abs(dr)>radius || l<low || l>high) return -1;
+        return ((dr+radius)*(2*radius+1)+dc+radius)*(high-low+1)+l-low;
+    }
+    std::vector<int> path_to(int node,const RoutingGraph&) const;
 };
 struct CompleteMetrics {
     bool official_model{false};
@@ -391,6 +413,10 @@ private:
     void run_hotspot_rrr(int);
     std::vector<int> select_hotspot_cells(size_t);
     std::vector<NetRoute> via_stack_candidates(size_t,const NetRoute&);
+    bool climb_column_congested(int,const NetRoute&,int,int) const;
+    ClimbEscapeField climb_escape_field(int,const NetRoute&,int,int) const;
+    int climb_escape_exit(const ClimbEscapeField&,int,int) const;
+    void run_guide_local_edit();
     void optimize_dynamic_tsv();
     void rematch_tsv_ownership();
     void recover_wirelength();

@@ -78,6 +78,14 @@ target_link_libraries(eda_diagnose_tsv_heat_tradeoff PRIVATE eda_core)
 set_target_properties(eda_diagnose_tsv_heat_tradeoff PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 # Offline TSV thermal headroom estimate; never linked into the router.
+add_executable(eda_estimate_stack_floor scripts/estimate_stack_floor.cpp)
+target_link_libraries(eda_estimate_stack_floor PRIVATE eda_core)
+set_target_properties(eda_estimate_stack_floor PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+add_executable(eda_refine_guide_local scripts/refine_guide_local.cpp)
+target_link_libraries(eda_refine_guide_local PRIVATE eda_core)
+set_target_properties(eda_refine_guide_local PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
 add_executable(eda_diagnose_tsv_thermal scripts/diagnose_tsv_thermal.cpp)
 target_link_libraries(eda_diagnose_tsv_thermal PRIVATE eda_core)
 set_target_properties(eda_diagnose_tsv_thermal PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
@@ -404,4 +412,17 @@ set_target_properties(eda_diagnose_site PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${C
 
 if(BUILD_TESTING AND Python3_Interpreter_FOUND)
  add_test(NAME site_objective_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_site_objective_cli.py $<TARGET_FILE:eda_router>)
+endif()
+
+if(BUILD_TESTING)
+    add_executable(guide_via_stack_relocator_tests tests/guide_via_stack_relocator_tests.cpp)
+    target_link_libraries(guide_via_stack_relocator_tests PRIVATE eda_core)
+    add_test(NAME guide_via_stack_relocator COMMAND guide_via_stack_relocator_tests "${CMAKE_BINARY_DIR}/guide-via-stack-test-artifacts")
+    add_executable(guide_subtree_reconnector_tests tests/guide_subtree_reconnector_tests.cpp)
+    target_link_libraries(guide_subtree_reconnector_tests PRIVATE eda_core)
+    add_test(NAME guide_subtree_reconnector COMMAND guide_subtree_reconnector_tests "${CMAKE_BINARY_DIR}/guide-subtree-test-artifacts")
+    add_executable(climb_escape_tests tests/climb_escape_tests.cpp)
+    target_link_libraries(climb_escape_tests PRIVATE eda_core)
+    add_test(NAME climb_escape COMMAND climb_escape_tests "${CMAKE_BINARY_DIR}/climb-escape-artifacts"
+        "${CMAKE_CURRENT_SOURCE_DIR}/output/runtime/official-flute")
 endif()
