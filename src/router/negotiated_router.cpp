@@ -126,6 +126,7 @@ NegotiatedRouter::NegotiatedRouter(const DefParser& d,const LefParser& l,const T
         }
         if(options_.official_metrics.score_20261020 && full_reference_<=0)
             throw std::runtime_error("20261020 score requires a positive total FLUTE reference");
+        policy_.set_score_calibration(static_cast<double>(full_reference_),options_.official_metrics.thermal_gain);
     }
     started_=options_.unified_budget && options_.process_started!=std::chrono::steady_clock::time_point{}
         ?options_.process_started:std::chrono::steady_clock::now();
@@ -2157,6 +2158,11 @@ bool NegotiatedRouter::route_all() {
         std::stable_sort(order.begin(),order.end(),[&](size_t a,size_t b) {
             const auto& x=def_.nets()[a];const auto& y=def_.nets()[b];
             if(x.is_cross_die!=y.is_cross_die) return x.is_cross_die>y.is_cross_die;
+            if(options_.initial_short_first && !x.is_cross_die) {
+                if(spans[a]!=spans[b]) return spans[a]<spans[b];
+                if(x.pins.size()!=y.pins.size()) return x.pins.size()<y.pins.size();
+                return x.name<y.name;
+            }
             if(x.pins.size()!=y.pins.size()) return x.pins.size()>y.pins.size();
             if(spans[a]!=spans[b]) return spans[a]>spans[b];
             return x.name<y.name;
@@ -2420,7 +2426,12 @@ bool NegotiatedRouter::export_stats(const std::string& path) const {
            <<",\"candidate_edges\":"<<policy_.assignment_candidate_edges()<<",\"expansions\":"<<policy_.assignment_expansions()<<",\"global_completions\":"<<policy_.assignment_global_completions()
            <<",\"assignment_polish_thermal_rule\":"<<json_string(policy_.assignment_polish_thermal_mode())
            <<",\"assignment_polish_correlation_before\":"<<policy_.assignment_polish_correlation_before()<<",\"assignment_polish_correlation_after\":"<<policy_.assignment_polish_correlation_after()
-           <<",\"assignment_polish_heat_weight\":"<<options_.tsv_policy.polish_heat_weight<<",\"assignment_polish_moves\":"<<policy_.assignment_polish_moves()<<",\"assignment_polish_swaps\":"<<policy_.assignment_polish_swaps()<<",\"assignment_polish_cost_reduction\":"<<policy_.assignment_polish_cost_reduction()
+           <<",\"assignment_polish_heat_weight\":"<<options_.tsv_policy.polish_heat_weight
+           <<",\"assignment_polish_score_aware\":"<<(options_.tsv_policy.polish_score_aware?"true":"false")
+           <<",\"assignment_polish_length_ratio\":"<<options_.tsv_policy.polish_length_ratio
+           <<",\"assignment_polish_initial_heat_weight_dbu\":"<<policy_.assignment_polish_heat_weight_dbu()
+           <<",\"assignment_polish_predicted_score_gain\":"<<policy_.assignment_polish_predicted_score_gain()
+           <<",\"assignment_polish_moves\":"<<policy_.assignment_polish_moves()<<",\"assignment_polish_swaps\":"<<policy_.assignment_polish_swaps()<<",\"assignment_polish_cost_reduction\":"<<policy_.assignment_polish_cost_reduction()
            <<",\"assignment_polish_candidates\":"<<options_.tsv_policy.polish_candidates
            <<",\"assignment_polish_passes_limit\":"<<options_.tsv_policy.polish_passes
            <<",\"assignment_polish_bidirectional\":"<<(options_.tsv_policy.polish_bidirectional?"true":"false")
@@ -2464,6 +2475,14 @@ bool NegotiatedRouter::export_stats(const std::string& path) const {
         out<<",\n\"budgeted_wirelength_recovery\":{\"enabled\":"<<(options_.large_recovery?"true":"false")
            <<",\"net_limit\":"<<options_.large_recovery_nets<<",\"rounds\":"<<options_.large_recovery_rounds
            <<",\"global_wirelength_shortlist\":"<<(options_.recovery_global_wirelength?"true":"false")
+           <<",\"rotate\":"<<(options_.recovery_rotate?"true":"false")<<",\"rotation_sweeps\":"<<recovery_rotation_sweeps_
+           <<",\"rotation_marked\":"<<recovery_distinct_attempted_
+           <<",\"layer_swap\":{\"enabled\":"<<(options_.layer_swap?"true":"false")<<",\"blocker_limit\":"<<options_.layer_swap_blockers
+           <<",\"attempted\":"<<swap_stats_.attempted<<",\"accepted\":"<<swap_stats_.accepted<<",\"no_gain\":"<<swap_stats_.no_gain
+           <<",\"no_blocker\":"<<swap_stats_.no_blocker<<",\"rejected\":"<<swap_stats_.rejected<<",\"failures\":"<<swap_stats_.failures
+           <<",\"blockers_moved\":"<<swap_stats_.blockers_moved<<",\"sweeps\":"<<swap_stats_.sweeps
+           <<",\"checkpoints\":"<<swap_stats_.checkpoints<<",\"checkpoint_rollbacks\":"<<swap_stats_.checkpoint_rollbacks
+           <<",\"seconds\":"<<swap_stats_.seconds<<",\"delta_length\":"<<swap_stats_.delta_length<<"}"
            <<",\"branch_limit\":"<<options_.large_recovery_branches<<",\"budget_seconds\":"<<options_.large_recovery_seconds
            <<",\"selected\":"<<recovery_stats_.selected<<",\"zero_reference\":"<<recovery_stats_.zero_reference
            <<",\"attempted\":"<<recovery_stats_.attempted<<",\"candidates\":"<<recovery_stats_.candidates
@@ -2634,6 +2653,7 @@ bool NegotiatedRouter::export_stats(const std::string& path) const {
            <<",\"hotspot_cell_limit\":"<<options_.hotspot_cell_limit
            <<",\"via_stack_radius\":"<<options_.via_stack_radius
            <<",\"climb_escape_radius\":"<<options_.climb_escape_radius
+           <<",\"initial_short_first\":"<<(options_.initial_short_first?"true":"false")
            <<",\"v8_tsv_probe_candidates\":"<<options_.v8_tsv_probe_candidates
            <<",\"v8_tsv_rematch_group_size\":"<<options_.v8_tsv_rematch_group_size
            <<",\"v8_tsv_rematch_nets\":"<<options_.v8_tsv_rematch_nets

@@ -32,10 +32,12 @@ void NegotiatedRouter::run_v9_schedule() {
     // TSV move families assume one net per landing; shared cells give their
     // budget to RRR and recovery instead of dispatching no-op slices.
     const bool unique_landings=!shared_landings_active_;
-    std::array<bool,4> enabled{options_.rrr_rounds>0,unique_landings&&options_.v7_tsv&&options_.tsv_rounds>0,
-                              unique_landings&&options_.v8_tsv_rematch,options_.large_recovery};
-    std::array<size_t,4> visits{},stale{};
-    std::array<double,4> gain{},work{};
+    // Stage 4 (layer swap) is opt-in and joins the same gain/time selection.
+    constexpr size_t stages=5;
+    std::array<bool,stages> enabled{options_.rrr_rounds>0,unique_landings&&options_.v7_tsv&&options_.tsv_rounds>0,
+                              unique_landings&&options_.v8_tsv_rematch,options_.large_recovery,options_.layer_swap};
+    std::array<size_t,stages> visits{},stale{};
+    std::array<double,stages> gain{},work{};
     int rrr_remaining=options_.rrr_rounds;
     BudgetedRecoveryStats recovery_total{};
     bool recovery_seen=false,tsv_started=false;
@@ -45,16 +47,16 @@ void NegotiatedRouter::run_v9_schedule() {
     // Bounded batches prevent indefinitely revisiting an exhausted candidate
     // family. Every enabled family receives a sample before gain/time selection.
     for(size_t dispatch=0;dispatch<64 && Clock::now()<outer_deadline;++dispatch) {
-        size_t chosen=4;double best=-1;
-        for(size_t k=0;k<4;++k) {
+        size_t chosen=stages;double best=-1;
+        for(size_t k=0;k<stages;++k) {
             if(!enabled[k]||stale[k]>=2||(k==0&&rrr_remaining<=0)) continue;
             if(!visits[k]) {chosen=k;break;}
             const double score=gain[k]/std::max(.001,work[k])+1e-5/std::sqrt(double(visits[k]));
             if(score>best) {best=score;chosen=k;}
         }
-        if(chosen==4) break;
+        if(chosen==stages) break;
         const double remaining=std::max(0.0,std::chrono::duration<double>(outer_deadline-Clock::now()).count());
-        size_t unseen=0;for(size_t k=0;k<4;++k) unseen+=enabled[k]&&!visits[k];
+        size_t unseen=0;for(size_t k=0;k<stages;++k) unseen+=enabled[k]&&!visits[k];
         const double slice=std::min(remaining,std::max(.02,std::min(60.0,remaining/double(std::max(size_t(2),unseen+1)))));
         deadline_=std::min(outer_deadline,Clock::now()+std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(slice)));
         const auto start=Clock::now();const double before=best_metrics_.guide.quality;
@@ -73,6 +75,8 @@ void NegotiatedRouter::run_v9_schedule() {
                 counters_.v9_rematch_budget+=slice;
                 options_.v8_tsv_rematch_seconds=counters_.v8_rematch_seconds+slice;
                 rematch_tsv_ownership();
+            } else if(chosen==4) {
+                recover_layer_swaps();
             } else {
                 counters_.v9_recovery_budget+=slice;
                 options_.large_recovery_seconds=slice;
@@ -112,7 +116,7 @@ void NegotiatedRouter::run_v9_schedule() {
         if(delta>1e-9) stale[chosen]=0;
         else if(!unfinished_tsv) ++stale[chosen];
         // A changed design can reopen opportunities in a previously stale arm.
-        if(delta>1e-9)for(size_t k=0;k<4;++k)if(k!=chosen&&stale[k])--stale[k];
+        if(delta>1e-9)for(size_t k=0;k<stages;++k)if(k!=chosen&&stale[k])--stale[k];
         std::cout<<"[V9 budget] stage="<<chosen<<" allocated="<<slice<<" used="<<elapsed<<" gain="<<delta<<'\n';
     }
     if(recovery_seen)recovery_stats_=recovery_total;
